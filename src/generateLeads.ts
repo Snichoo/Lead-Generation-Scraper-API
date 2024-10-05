@@ -68,10 +68,11 @@ interface EnrichmentResult {
   // Add other properties as needed
 }
 
-// Function to call the mixed people search API and return the highest role persons for multiple domains
 async function getHighestRolePerson(
   organizationDomains: string[]
 ): Promise<{ id: string; title: string; domain: string }[]> {
+  console.log('getHighestRolePerson called with organizationDomains:', organizationDomains);
+
   const searchUrl = "https://api.apollo.io/v1/mixed_people/search";
 
   const searchData = {
@@ -88,6 +89,8 @@ async function getHighestRolePerson(
 
   try {
     // Step 1: Search for people in the organization domains
+    console.log('Sending search request to Apollo API with data:', searchData);
+
     const searchResponse = await fetch(searchUrl, {
       method: "POST",
       headers: headers,
@@ -99,6 +102,8 @@ async function getHighestRolePerson(
     }
 
     const searchResult: SearchResult = await searchResponse.json();
+
+    console.log('Search result received from Apollo API:', searchResult);
 
     if (!searchResult.people || searchResult.people.length === 0) {
       console.log(
@@ -126,6 +131,8 @@ async function getHighestRolePerson(
       }
     });
 
+    console.log('People grouped by domain:', peopleByDomain);
+
     const highestRolePersons: { id: string; title: string; domain: string }[] =
       [];
 
@@ -133,11 +140,15 @@ async function getHighestRolePerson(
     for (const domain of Object.keys(peopleByDomain)) {
       const people = peopleByDomain[domain];
 
+      console.log(`Processing domain: ${domain} with ${people.length} people`);
+
       // Clean up the result by extracting only 'id' and 'title'
       const cleanedResults = people.map((person: SearchResultPerson) => ({
         id: person.id,
         title: person.title,
       }));
+
+      console.log(`Cleaned results for domain ${domain}:`, cleanedResults);
 
       // Use GPT to find the person with the highest role
       const completion = await openai.beta.chat.completions.parse({
@@ -161,6 +172,8 @@ async function getHighestRolePerson(
       const highestRolePerson: { id: string; title: string } | null =
         completion.choices[0].message.parsed;
 
+      console.log(`Highest role person for domain ${domain}:`, highestRolePerson);
+
       if (highestRolePerson) {
         highestRolePersons.push({ ...highestRolePerson, domain });
       } else {
@@ -170,6 +183,8 @@ async function getHighestRolePerson(
       }
     }
 
+    console.log('Final highestRolePersons:', highestRolePersons);
+
     return highestRolePersons;
   } catch (error) {
     console.error("Error with Apollo API request or GPT processing:", error);
@@ -177,10 +192,14 @@ async function getHighestRolePerson(
   }
 }
 
+
+
 async function enrichHighestRolePersons(
   highestRolePersons: { id: string; title: string; companyIndex: number }[],
   savedData: any[]
 ) {
+  console.log('enrichHighestRolePersons called with highestRolePersons:', highestRolePersons);
+
   if (highestRolePersons.length === 0) {
     console.log("No highest role persons to enrich.");
     return;
@@ -235,6 +254,8 @@ async function enrichHighestRolePersons(
       enrichedMatchesMap[match.id] = match;
     });
 
+    console.log('Enriched matches mapped by ID:', enrichedMatchesMap);
+
     // Update the corresponding companies in savedData
     highestRolePersons.forEach((person) => {
       const enrichedMatch = enrichedMatchesMap[person.id];
@@ -269,6 +290,7 @@ async function enrichHighestRolePersons(
     console.error("Error during bulk enrichment:", error);
   }
 }
+
 
 function extractSuburbOrCity(locationInput: string): string {
   // Regular expressions to match Australian states and territories
@@ -1044,60 +1066,43 @@ export async function generateLeads(
 
     // Proceed with the rest of the lead generation process using the filtered savedData
 
-    const highestRolePersons: {
-      id: string;
-      title: string;
-      domain: string;
-      companyIndex: number;
-    }[] = [];
+// Proceed with the rest of the lead generation process using the filtered savedData
 
-    let domainsBatch: string[] = [];
-    let domainToCompanyIndex: { [domain: string]: number } = {};
+console.log('Proceeding with lead generation using filtered savedData.');
+console.log('Number of companies in savedData:', savedData.length);
 
-    for (let index = 0; index < savedData.length; index++) {
-      const company = savedData[index];
-      if (company.website) {
-        const websiteDomain = new URL(company.website)
-          .hostname.toLowerCase()
-          .replace(/^www\./, "");
-        domainsBatch.push(websiteDomain);
-        domainToCompanyIndex[websiteDomain] = index;
+const highestRolePersons: {
+  id: string;
+  title: string;
+  domain: string;
+  companyIndex: number;
+}[] = [];
 
-        // When we have collected enough domains, process them
-        if (domainsBatch.length === 10) {
-          const highestRolePersonsBatch = await getHighestRolePerson(
-            domainsBatch
-          );
+let domainsBatch: string[] = [];
+let domainToCompanyIndex: { [domain: string]: number } = {};
 
-          for (const person of highestRolePersonsBatch) {
-            const normalizedDomain = person.domain.toLowerCase().replace(/^www\./, "");
-            const companyIndex = domainToCompanyIndex[normalizedDomain];
+for (let index = 0; index < savedData.length; index++) {
+  const company = savedData[index];
+  console.log(`Processing company at index ${index}:`, company);
 
-            if (companyIndex === undefined) {
-              console.error(
-                `Company index not found for domain ${normalizedDomain}`
-              );
-            } else {
-              highestRolePersons.push({ ...person, companyIndex });
+  if (company.website) {
+    const websiteDomain = new URL(company.website)
+      .hostname.toLowerCase()
+      .replace(/^www\./, "");
+    console.log(`Extracted website domain: ${websiteDomain}`);
 
-              // When we have collected 10 highest role persons, enrich them
-              if (highestRolePersons.length === 10) {
-                await enrichHighestRolePersons(highestRolePersons, savedData);
-                highestRolePersons.length = 0; // Reset the array
-              }
-            }
-          }
+    domainsBatch.push(websiteDomain);
+    domainToCompanyIndex[websiteDomain] = index;
 
-          // Clear the domainsBatch and domainToCompanyIndex
-          domainsBatch = [];
-          domainToCompanyIndex = {};
-        }
-      }
-    }
+    // When we have collected enough domains, process them
+    if (domainsBatch.length === 10) {
+      console.log('Domains batch is full. Calling getHighestRolePerson with domainsBatch:', domainsBatch);
 
-    // Process any remaining domains
-    if (domainsBatch.length > 0) {
-      const highestRolePersonsBatch = await getHighestRolePerson(domainsBatch);
+      const highestRolePersonsBatch = await getHighestRolePerson(
+        domainsBatch
+      );
+
+      console.log('Received highestRolePersonsBatch:', highestRolePersonsBatch);
 
       for (const person of highestRolePersonsBatch) {
         const normalizedDomain = person.domain.toLowerCase().replace(/^www\./, "");
@@ -1108,10 +1113,14 @@ export async function generateLeads(
             `Company index not found for domain ${normalizedDomain}`
           );
         } else {
+          console.log(`Mapping person to company index ${companyIndex}:`, person);
+
           highestRolePersons.push({ ...person, companyIndex });
 
-          // Enrich when we have 10 records
+          // When we have collected 10 highest role persons, enrich them
           if (highestRolePersons.length === 10) {
+            console.log('HighestRolePersons batch is full. Calling enrichHighestRolePersons.');
+
             await enrichHighestRolePersons(highestRolePersons, savedData);
             highestRolePersons.length = 0; // Reset the array
           }
@@ -1122,11 +1131,53 @@ export async function generateLeads(
       domainsBatch = [];
       domainToCompanyIndex = {};
     }
+  } else {
+    console.log(`Company at index ${index} does not have a website.`);
+  }
+}
 
-    // Enrich any remaining highest role persons less than 10
-    if (highestRolePersons.length > 0) {
-      await enrichHighestRolePersons(highestRolePersons, savedData);
+// Process any remaining domains
+if (domainsBatch.length > 0) {
+  console.log('Processing remaining domains in domainsBatch:', domainsBatch);
+
+  const highestRolePersonsBatch = await getHighestRolePerson(domainsBatch);
+
+  console.log('Received highestRolePersonsBatch:', highestRolePersonsBatch);
+
+  for (const person of highestRolePersonsBatch) {
+    const normalizedDomain = person.domain.toLowerCase().replace(/^www\./, "");
+    const companyIndex = domainToCompanyIndex[normalizedDomain];
+
+    if (companyIndex === undefined) {
+      console.error(
+        `Company index not found for domain ${normalizedDomain}`
+      );
+    } else {
+      console.log(`Mapping person to company index ${companyIndex}:`, person);
+
+      highestRolePersons.push({ ...person, companyIndex });
+
+      // Enrich when we have 10 records
+      if (highestRolePersons.length === 10) {
+        console.log('HighestRolePersons batch is full. Calling enrichHighestRolePersons.');
+
+        await enrichHighestRolePersons(highestRolePersons, savedData);
+        highestRolePersons.length = 0; // Reset the array
+      }
     }
+  }
+
+  // Clear the domainsBatch and domainToCompanyIndex
+  domainsBatch = [];
+  domainToCompanyIndex = {};
+}
+
+// Enrich any remaining highest role persons less than 10
+if (highestRolePersons.length > 0) {
+  console.log('Enriching remaining highestRolePersons:', highestRolePersons);
+
+  await enrichHighestRolePersons(highestRolePersons, savedData);
+}
 
     // Save the updated savedData back to finalResults.json
     saveToFile("finalResults.json", savedData);
