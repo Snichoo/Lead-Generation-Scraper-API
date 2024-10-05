@@ -546,36 +546,37 @@ async function generateCSVFile(
   });
 
   // Generate the CSV string
-  const header = csvStringifier.getHeaderString();
-  const records = csvStringifier.stringifyRecords(csvData);
-  const csvContent = header + records;
+ // Generate the CSV string
+ const header = csvStringifier.getHeaderString();
+ const records = csvStringifier.stringifyRecords(csvData);
+ const csvContent = header + records;
 
-  // Sanitize business type and location for filename
-  const sanitizedBusinessType = sanitizeFilename(businessType);
-  const sanitizedLocation = sanitizeFilename(location);
+ // Sanitize business type and location for filename
+ const sanitizedBusinessType = sanitizeFilename(businessType);
+ const sanitizedLocation = sanitizeFilename(location);
 
-  // Get current date and time (excluding seconds)
-  const now = new Date();
-  const timestamp = format(now, 'yyyy-MM-dd_HH-mm');
+ // Get current date and time (excluding seconds)
+ const now = new Date();
+ const timestamp = format(now, 'yyyy-MM-dd_HH-mm');
 
-  const filename = `${sanitizedBusinessType}_${sanitizedLocation}_${timestamp}.csv`;
+ const filename = `${sanitizedBusinessType}_${sanitizedLocation}_${timestamp}.csv`;
 
-  // Define the CSV file path
-  const filepath = path.join(process.cwd(), "csv_files", filename);
+ // Define the CSV file path
+ const filepath = path.join(process.cwd(), "public", "csv", filename);
 
-  // Ensure the directory exists
-  fs.mkdirSync(path.dirname(filepath), { recursive: true });
+ // Ensure the directory exists
+ fs.mkdirSync(path.dirname(filepath), { recursive: true });
 
-  // Save the CSV file
-  fs.writeFileSync(filepath, csvContent);
+ // Save the CSV file
+ fs.writeFileSync(filepath, csvContent);
 
-  console.log(`CSV file saved to ${filepath}`);
+ console.log(`CSV file saved to ${filepath}`);
 
-  // Get the file size
-  const stats = fs.statSync(filepath);
-  const fileSizeInBytes = stats.size;
+ // Get the file size
+ const stats = fs.statSync(filepath);
+ const fileSizeInBytes = stats.size;
 
-  return { filename, fileSizeInBytes }; // Return the filename and file size
+ return { filename, fileSizeInBytes }; // Return the filename and file size
 }
 
 // Function to filter large companies using Perplexity and remove them from savedData
