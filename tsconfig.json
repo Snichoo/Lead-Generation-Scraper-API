@@ -5,7 +5,8 @@
       "moduleResolution": "NodeNext",
       "esModuleInterop": true,
       "strict": true,
-      "outDir": "./build"
+      "outDir": "./build",
+      "rootDir": "./src"
     },
     "include": ["src/**/*.ts"]
   }
