@@ -65,7 +65,7 @@ app.get('/download', (req: Request, res: Response) => {
   }
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`Lead Generation API server is running on port ${PORT}`);
 });

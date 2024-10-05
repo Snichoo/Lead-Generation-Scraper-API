@@ -3,7 +3,6 @@ import { OpenAI } from "openai";
 import dotenv from "dotenv";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
-import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import * as path from 'path';
 import axios from "axios";
