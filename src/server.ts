@@ -1,11 +1,9 @@
 import express, { Request, Response } from 'express';
-import dotenv from 'dotenv';
 import { generateLeads } from './generateLeads.js';
 import cors from 'cors'; // Import cors
 import path from 'path';
 import fs from 'fs';
 
-dotenv.config();
 
 const app = express(); // Initialize 'app' before using it
 

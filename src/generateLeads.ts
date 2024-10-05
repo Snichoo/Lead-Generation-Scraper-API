@@ -1,6 +1,4 @@
-
 import { OpenAI } from "openai";
-import dotenv from "dotenv";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import fs from 'fs';
@@ -10,10 +8,8 @@ import * as cheerio from "cheerio";
 import pLimit from 'p-limit';
 import { createObjectCsvStringifier } from 'csv-writer';
 import { format } from 'date-fns';
+import { suburbsByCity } from "./suburbs.js";
 
-
-// Load the environment variables from the .env file
-dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -21,100 +17,6 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const LocationCheck = z.object({
   isBroadLocation: z.boolean(),
 });
-
-const SuburbListSchema = z.object({
-  suburbs: z.array(z.string()), // Ensuring the response is an array of suburb strings
-});
-
-
-
-// Function to call Perplexity API and get suburbs list
-async function listSuburbs(location: string): Promise<string> {
-  const options = {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${
-        process.env.PERPLEXITY_API_KEY || ""
-      }`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "llama-3.1-sonar-huge-128k-online",
-      messages: [
-        {
-          role: "system",
-          content: "List every single suburb in this location.",
-        },
-        {
-          role: "user",
-          content: location,
-        },
-      ],
-      temperature: 0.2,
-      top_p: 0.9,
-      return_citations: true,
-      search_domain_filter: ["perplexity.ai"],
-      return_images: false,
-      return_related_questions: false,
-      search_recency_filter: "month",
-      top_k: 0,
-      stream: false,
-      presence_penalty: 0,
-      frequency_penalty: 1,
-    }),
-  };
-
-  try {
-    const response = await fetch(
-      "https://api.perplexity.ai/chat/completions",
-      options
-    );
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const messageContent = data.choices[0].message.content;
-
-    console.log("Suburbs List:", messageContent);
-    return messageContent;
-  } catch (err) {
-    console.error("Error fetching suburbs list:", err);
-    throw err;
-  }
-}
-
-// Function to extract structured suburbs from unstructured listSuburbs response
-async function extractSuburbs(unstructuredSuburbs: string): Promise<string[]> {
-  const completion = await openai.beta.chat.completions.parse({
-    model: "gpt-4o-2024-08-06",
-    messages: [
-      {
-        role: "system",
-        content: "Extract the list of suburbs from the given text.",
-      },
-      { role: "user", content: unstructuredSuburbs },
-    ],
-    response_format: zodResponseFormat(SuburbListSchema, "suburb_list"),
-  });
-
-  // Check if completion, choices, message, and parsed are valid
-  if (
-    completion &&
-    completion.choices &&
-    completion.choices.length > 0 &&
-    completion.choices[0].message &&
-    completion.choices[0].message.parsed &&
-    completion.choices[0].message.parsed.suburbs
-  ) {
-    // Parse the structured suburb list
-    const suburbList = completion.choices[0].message.parsed.suburbs;
-    return suburbList;
-  } else {
-    throw new Error("Failed to extract structured suburbs.");
-  }
-}
 
 // Define the schema for the output structure
 const PersonSchema = z.object({
@@ -368,8 +270,6 @@ async function enrichHighestRolePersons(
   }
 }
 
-
-
 function extractSuburbOrCity(locationInput: string): string {
   // Regular expressions to match Australian states and territories
   const stateRegex = /\b(New South Wales|NSW|Victoria|VIC|Queensland|QLD|South Australia|SA|Western Australia|WA|Tasmania|TAS|Northern Territory|NT|Australian Capital Territory|ACT)\b/i;
@@ -406,7 +306,6 @@ function extractSuburbOrCity(locationInput: string): string {
 
   throw new Error("Unable to extract a valid suburb or city from the input.");
 }
-
 
 async function scrapeGoogleMaps(
   businessType: string,
@@ -503,7 +402,8 @@ function normalizeUrl(urlStr: string): string {
 async function runActorPool(
   businessType: string,
   suburbs: string[],
-  maxConcurrency: number
+  maxConcurrency: number,
+  stateAbbr: string  // Accept the state abbreviation here
 ): Promise<any[]> {
   const allResults: any[] = [];
   const allPromises: Promise<void>[] = [];
@@ -516,9 +416,10 @@ async function runActorPool(
         let suburb = suburbs[nextIndex++].trim();
         activeCount++;
 
-        // Check if suburb already ends with ", Australia"
-        if (!suburb.toLowerCase().endsWith(", australia")) {
-          suburb = `${suburb}, Australia`;
+        // Check if suburb already ends with the state abbreviation
+        const suburbLower = suburb.toLowerCase();
+        if (!suburbLower.endsWith(` ${stateAbbr.toLowerCase()}`)) {
+          suburb = `${suburb} ${stateAbbr}`;
         }
 
         console.log(`Starting actor for suburb: ${suburb}`);
@@ -548,8 +449,8 @@ async function runActorPool(
 
 
 function sanitizeFilename(name: string): string {
-    return name.replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
-  }
+  return name.replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
+}
 
 // Function to parse address into components
 function parseAddress(address: string) {
@@ -572,61 +473,61 @@ function parseAddress(address: string) {
 
 // Replace your existing generateCSVData function with this
 async function generateCSVFile(
-    businessType: string,
-    location: string,
-    data: any[]
-  ): Promise<{ filename: string; fileSizeInBytes: number } | null> {
-    if (data.length === 0) {
-      console.log("No leads were found. Try changing locations or business type.");
-      return null;
-    }
-  
-    // Define the CSV columns
-    const csvStringifier = createObjectCsvStringifier({
-      header: [
-        { id: "title", title: "Job Title" },
-        { id: "first_name", title: "First Name" },
-        { id: "last_name", title: "Last Name" },
-        { id: "personal_email", title: "Personal Email Address" },
-        { id: "company_email", title: "Company Email Address" },
-        { id: "phone_number", title: "Phone Number" },
-        { id: "linkedin", title: "LinkedIn" },
-        { id: "website", title: "Website" },
-        { id: "company_name", title: "Company Name" },
-        { id: "street_address", title: "Street No and Name" },
-        { id: "address_suburb", title: "Address Suburb" },
-        { id: "address_postcode", title: "Address Postcode" },
-        { id: "postal_address", title: "Postal Address" },
-        { id: "postal_suburb", title: "Postal Suburb" },
-        { id: "postal_postcode", title: "Postal PostCode" },
-        { id: "country", title: "Country" },
-      ],
-    });
-  
-    // Map the JSON data to CSV data
-    const csvData = data.map((item) => {
-      const addressParts = parseAddress(item.address || "");
-  
-      return {
-        title: item.title || "",
-        first_name: item.first_name || "",
-        last_name: item.last_name || "",
-        personal_email: item.company_personal_email || "",
-        company_email: item.company_general_email || "",
-        phone_number: item.company_phone || "",
-        linkedin: item.linkedin_url || "",
-        website: item.website || "",
-        company_name: item.company_name || "",
-        street_address: addressParts.streetAddress || "",
-        address_suburb: addressParts.suburb || "",
-        address_postcode: addressParts.postcode || "",
-        postal_address: addressParts.streetAddress || "",
-        postal_suburb: addressParts.suburb || "",
-        postal_postcode: addressParts.postcode || "",
-        country: "Australia",
-      };
-    });
-  
+  businessType: string,
+  location: string,
+  data: any[]
+): Promise<{ filename: string; fileSizeInBytes: number } | null> {
+  if (data.length === 0) {
+    console.log("No leads were found. Try changing locations or business type.");
+    return null;
+  }
+
+  // Define the CSV columns
+  const csvStringifier = createObjectCsvStringifier({
+    header: [
+      { id: "title", title: "Job Title" },
+      { id: "first_name", title: "First Name" },
+      { id: "last_name", title: "Last Name" },
+      { id: "personal_email", title: "Personal Email Address" },
+      { id: "company_email", title: "Company Email Address" },
+      { id: "phone_number", title: "Phone Number" },
+      { id: "linkedin", title: "LinkedIn" },
+      { id: "website", title: "Website" },
+      { id: "company_name", title: "Company Name" },
+      { id: "street_address", title: "Street No and Name" },
+      { id: "address_suburb", title: "Address Suburb" },
+      { id: "address_postcode", title: "Address Postcode" },
+      { id: "postal_address", title: "Postal Address" },
+      { id: "postal_suburb", title: "Postal Suburb" },
+      { id: "postal_postcode", title: "Postal PostCode" },
+      { id: "country", title: "Country" },
+    ],
+  });
+
+  // Map the JSON data to CSV data
+  const csvData = data.map((item) => {
+    const addressParts = parseAddress(item.address || "");
+
+    return {
+      title: item.title || "",
+      first_name: item.first_name || "",
+      last_name: item.last_name || "",
+      personal_email: item.company_personal_email || "",
+      company_email: item.company_general_email || "",
+      phone_number: item.company_phone || "",
+      linkedin: item.linkedin_url || "",
+      website: item.website || "",
+      company_name: item.company_name || "",
+      street_address: addressParts.streetAddress || "",
+      address_suburb: addressParts.suburb || "",
+      address_postcode: addressParts.postcode || "",
+      postal_address: addressParts.streetAddress || "",
+      postal_suburb: addressParts.suburb || "",
+      postal_postcode: addressParts.postcode || "",
+      country: "Australia",
+    };
+  });
+
   // Generate the CSV string
   const header = csvStringifier.getHeaderString();
   const records = csvStringifier.stringifyRecords(csvData);
@@ -659,10 +560,7 @@ async function generateCSVFile(
 
   return { filename, fileSizeInBytes }; // Return the filename and file size
 }
-  
-  
 
-// Function to filter large companies using Perplexity and remove them from savedData
 // Function to filter large companies using Perplexity and remove them from savedData
 async function filterLargeCompanies(companies: any[]): Promise<string[]> {
   // Prepare the company list with IDs
@@ -976,45 +874,92 @@ async function checkLocation(location: string): Promise<string> {
 }
 
 
+function normalizeCityName(cityName: string): string {
+  return cityName
+    .toLowerCase()
+    .replace(/[\s–-]+/g, '_') // Replace spaces and dashes with underscores
+    .replace(/[^\w_]/g, '');   // Remove any non-word characters except underscores
+}
+
+// Add this mapping near the top of your file or in a separate module
+const stateByCity: { [key: string]: string } = {
+  sydney: 'NSW',
+  melbourne: 'VIC',
+  brisbane: 'QLD',
+  perth: 'WA',
+  adelaide: 'SA',
+  hobart: 'TAS',
+  darwin: 'NT',
+  canberra: 'ACT',
+  // Add other cities and their respective state abbreviations as needed
+};
+
+
 // In your generateLeads function, use generateCSVFile instead of generateCSVData
 export async function generateLeads(
-    businessType: string,
-    locationInput: string
-  ): Promise<{ filename?: string; fileSizeInBytes?: number; error?: string }> {
-    try {
-      // Extract the suburb or city from the user's location input
-      const extractedLocation = extractSuburbOrCity(locationInput);
-      console.log("Extracted Location:", extractedLocation);
-  
-      // Use the extracted location in the rest of the function
-      const locationCheckResult = await checkLocation(extractedLocation);
-      console.log("Location check result:", locationCheckResult);
-  
-      let uniqueResults;
+  businessType: string,
+  locationInput: string
+): Promise<{ filename?: string; fileSizeInBytes?: number; error?: string }> {
+  try {
+    // Extract the suburb or city from the user's location input
+    const extractedLocation = extractSuburbOrCity(locationInput);
+    console.log("Extracted Location:", extractedLocation);
+
+    // Use the extracted location in the rest of the function
+    const locationCheckResult = await checkLocation(extractedLocation);
+    console.log("Location check result:", locationCheckResult);
+
+    let uniqueResults;
 
     if (locationCheckResult === "yes") {
       console.log("Broad location detected, fetching list of suburbs...");
-      const unstructuredSuburbs = await listSuburbs(extractedLocation);
-      console.log("Suburbs list retrieved:", unstructuredSuburbs);
-      const structuredSuburbs = await extractSuburbs(unstructuredSuburbs);
-      console.log("Structured Suburb List:", structuredSuburbs);
+      let structuredSuburbs = [];
 
-      // Run a pool of actors and collect results
-      uniqueResults = await runActorPool(
-        businessType,
-        structuredSuburbs,
-        7
-      );
+      const cityKey = normalizeCityName(extractedLocation);
+
+      if (suburbsByCity[cityKey]) {
+        structuredSuburbs = suburbsByCity[cityKey];
+        // Get the state abbreviation for the city
+        const stateAbbr = stateByCity[cityKey];
+        if (!stateAbbr) {
+          throw new Error(`State abbreviation for ${extractedLocation} not found.`);
+        }
+  
+        console.log("Structured Suburb List:", structuredSuburbs);
+  
+        // Pass the state abbreviation to runActorPool
+        uniqueResults = await runActorPool(
+          businessType,
+          structuredSuburbs,
+          7,
+          stateAbbr  // Pass the state abbreviation here
+        );
+      } else {
+        throw new Error(`Suburbs list for ${extractedLocation} not available.`);
+      }
 
       // Remove duplicates from the combined results
       uniqueResults = removeDuplicates(uniqueResults);
     } else {
       console.log("Specific location detected, scraping Google Maps...");
-      const results = await scrapeGoogleMaps(businessType, extractedLocation);
-
+    
+      // Attempt to find the state abbreviation for the extracted location
+      const cityKey = normalizeCityName(extractedLocation);
+      let stateAbbr = stateByCity[cityKey];
+    
+      let locationToUse = extractedLocation;
+      if (stateAbbr) {
+        locationToUse = `${extractedLocation} ${stateAbbr}`;
+      } else {
+        console.warn(`State abbreviation for ${extractedLocation} not found. Using default location.`);
+      }
+    
+      const results = await scrapeGoogleMaps(businessType, locationToUse);
+    
       // Remove duplicates in case of single-location scraping
       uniqueResults = removeDuplicates(results);
     }
+    
 
     // Save final results to JSON file
     saveToFile("finalResults.json", uniqueResults);
@@ -1047,39 +992,38 @@ export async function generateLeads(
     // Save updated savedData back to finalResults.json
     saveToFile("finalResults.json", savedData);
 
-// New Step: Filter large companies using Perplexity
-console.log("Filtering large companies using Perplexity...");
-const batchSize = 30;
-const largeCompanyIds = new Set<string>(); // Use a Set to store unique IDs
+    // New Step: Filter large companies using Perplexity
+    console.log("Filtering large companies using Perplexity...");
+    const batchSize = 30;
+    const largeCompanyIds = new Set<string>(); // Use a Set to store unique IDs
 
-const limit = pLimit(5); // Limit concurrency to 5
-const batchPromises = [];
+    const limit = pLimit(5); // Limit concurrency to 5
+    const batchPromises = [];
 
-for (let i = 0; i < savedData.length; i += batchSize) {
-  const batch = savedData.slice(i, i + batchSize);
-  const promise = limit(async () => {
-    try {
-      const ids = await filterLargeCompanies(batch);
-      return ids;
-    } catch (error) {
-      console.error("Error in batch processing:", error);
-      return []; // Return empty array on error to continue processing other batches
+    for (let i = 0; i < savedData.length; i += batchSize) {
+      const batch = savedData.slice(i, i + batchSize);
+      const promise = limit(async () => {
+        try {
+          const ids = await filterLargeCompanies(batch);
+          return ids;
+        } catch (error) {
+          console.error("Error in batch processing:", error);
+          return []; // Return empty array on error to continue processing other batches
+        }
+      });
+      batchPromises.push(promise);
     }
-  });
-  batchPromises.push(promise);
-}
 
-// Now, await all promises
-const batchResults = await Promise.all(batchPromises);
+    // Now, await all promises
+    const batchResults = await Promise.all(batchPromises);
 
-// Collect all IDs
-batchResults.forEach((ids) => {
-  ids.forEach((id) => largeCompanyIds.add(id));
-});
+    // Collect all IDs
+    batchResults.forEach((ids) => {
+      ids.forEach((id) => largeCompanyIds.add(id));
+    });
 
-// Now, remove the companies with IDs in largeCompanyIds from savedData
-savedData = savedData.filter((company) => !largeCompanyIds.has(company.id));
-
+    // Now, remove the companies with IDs in largeCompanyIds from savedData
+    savedData = savedData.filter((company) => !largeCompanyIds.has(company.id));
 
     // Save the updated savedData back to finalResults.json
     saveToFile("finalResults.json", savedData);
@@ -1104,24 +1048,24 @@ savedData = savedData.filter((company) => !largeCompanyIds.has(company.id));
           .replace(/^www\./, "");
         domainsBatch.push(websiteDomain);
         domainToCompanyIndex[websiteDomain] = index;
-    
+
         // When we have collected enough domains, process them
         if (domainsBatch.length === 10) {
           const highestRolePersonsBatch = await getHighestRolePerson(
             domainsBatch
           );
-    
+
           for (const person of highestRolePersonsBatch) {
             const normalizedDomain = person.domain.toLowerCase().replace(/^www\./, "");
             const companyIndex = domainToCompanyIndex[normalizedDomain];
-    
+
             if (companyIndex === undefined) {
               console.error(
                 `Company index not found for domain ${normalizedDomain}`
               );
             } else {
               highestRolePersons.push({ ...person, companyIndex });
-    
+
               // When we have collected 10 highest role persons, enrich them
               if (highestRolePersons.length === 10) {
                 await enrichHighestRolePersons(highestRolePersons, savedData);
@@ -1129,29 +1073,29 @@ savedData = savedData.filter((company) => !largeCompanyIds.has(company.id));
               }
             }
           }
-    
+
           // Clear the domainsBatch and domainToCompanyIndex
           domainsBatch = [];
           domainToCompanyIndex = {};
         }
       }
     }
-    
+
     // Process any remaining domains
     if (domainsBatch.length > 0) {
       const highestRolePersonsBatch = await getHighestRolePerson(domainsBatch);
-    
+
       for (const person of highestRolePersonsBatch) {
         const normalizedDomain = person.domain.toLowerCase().replace(/^www\./, "");
         const companyIndex = domainToCompanyIndex[normalizedDomain];
-    
+
         if (companyIndex === undefined) {
           console.error(
             `Company index not found for domain ${normalizedDomain}`
           );
         } else {
           highestRolePersons.push({ ...person, companyIndex });
-    
+
           // Enrich when we have 10 records
           if (highestRolePersons.length === 10) {
             await enrichHighestRolePersons(highestRolePersons, savedData);
@@ -1159,17 +1103,16 @@ savedData = savedData.filter((company) => !largeCompanyIds.has(company.id));
           }
         }
       }
-    
+
       // Clear the domainsBatch and domainToCompanyIndex
       domainsBatch = [];
       domainToCompanyIndex = {};
     }
-    
+
     // Enrich any remaining highest role persons less than 10
     if (highestRolePersons.length > 0) {
       await enrichHighestRolePersons(highestRolePersons, savedData);
     }
-    
 
     // Save the updated savedData back to finalResults.json
     saveToFile("finalResults.json", savedData);
