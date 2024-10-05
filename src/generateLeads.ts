@@ -300,7 +300,7 @@ function extractSuburbOrCity(locationInput: string): string {
 
     // If the cleaned component is not empty, return it
     if (cleanedComponent) {
-      return `${cleanedComponent}, Australia`;
+      return cleanedComponent; // Removed ", Australia"
     }
   }
 
