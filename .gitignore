@@ -1,0 +1,4 @@
+/.env
+/csv_files
+/node_modules
+/public
