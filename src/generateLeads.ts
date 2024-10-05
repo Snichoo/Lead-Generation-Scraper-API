@@ -888,11 +888,25 @@ const stateByCity: { [key: string]: string } = {
   brisbane: 'QLD',
   perth: 'WA',
   adelaide: 'SA',
-  hobart: 'TAS',
-  darwin: 'NT',
+  gold_coast: 'QLD',
+  newcastle: 'NSW',
   canberra: 'ACT',
-  // Add other cities and their respective state abbreviations as needed
+  wollongong: 'NSW',
+  geelong: 'VIC',
+  hobart: 'TAS',
+  townsville: 'QLD',
+  cairns: 'QLD',
+  toowoomba: 'QLD',
+  darwin: 'NT',
+  ballarat: 'VIC',
+  bendigo: 'VIC',
+  albury_wodonga: 'VIC',
+  launceston: 'TAS',
+  mackay: 'QLD',
+  rockhampton: 'QLD',
+  bunbury: 'WA'
 };
+
 
 
 // In your generateLeads function, use generateCSVFile instead of generateCSVData
