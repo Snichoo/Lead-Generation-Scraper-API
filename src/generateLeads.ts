@@ -34,7 +34,7 @@ async function listSuburbs(location: string): Promise<string> {
     method: "POST",
     headers: {
       Authorization: `Bearer ${
-        process.env.NEXT_PUBLIC_PERPLEXITY_API_KEY || ""
+        process.env.PERPLEXITY_API_KEY || ""
       }`,
       "Content-Type": "application/json",
     },
@@ -181,7 +181,7 @@ async function getHighestRolePerson(
   const headers = {
     "Cache-Control": "no-cache",
     "Content-Type": "application/json",
-    "X-Api-Key": process.env.NEXT_PUBLIC_APOLLO_SEARCH_API_KEY || "",
+    "X-Api-Key": process.env.APOLLO_SEARCH_API_KEY || "",
   };
 
   try {
@@ -295,7 +295,7 @@ async function enrichHighestRolePersons(
   const headers = {
     "Cache-Control": "no-cache",
     "Content-Type": "application/json",
-    "X-Api-Key": process.env.NEXT_PUBLIC_APOLLO_BULK_MATCH_API_KEY || "",
+    "X-Api-Key": process.env.APOLLO_BULK_MATCH_API_KEY || "",
   };
 
   try {
@@ -674,7 +674,7 @@ async function filterLargeCompanies(companies: any[]): Promise<string[]> {
     method: "POST",
     headers: {
       Authorization: `Bearer ${
-        process.env.NEXT_PUBLIC_PERPLEXITY_API_KEY || ""
+        process.env.PERPLEXITY_API_KEY || ""
       }`,
       "Content-Type": "application/json",
     },
