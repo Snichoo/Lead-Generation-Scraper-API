@@ -71,12 +71,10 @@ interface EnrichmentResult {
 async function getHighestRolePerson(
   organizationDomains: string[]
 ): Promise<{ id: string; title: string; domain: string }[]> {
-  console.log('getHighestRolePerson called with organizationDomains:', organizationDomains);
-
   const searchUrl = "https://api.apollo.io/v1/mixed_people/search";
 
   const searchData = {
-    q_organization_domains: organizationDomains.join("\n"), // Join domains by new line character
+    q_organization_domains: organizationDomains, // Pass as an array
     page: 1,
     per_page: 10,
   };
@@ -89,8 +87,6 @@ async function getHighestRolePerson(
 
   try {
     // Step 1: Search for people in the organization domains
-    console.log('Sending search request to Apollo API with data:', searchData);
-
     const searchResponse = await fetch(searchUrl, {
       method: "POST",
       headers: headers,
@@ -103,14 +99,13 @@ async function getHighestRolePerson(
 
     const searchResult: SearchResult = await searchResponse.json();
 
-    console.log('Search result received from Apollo API:', searchResult);
-
     if (!searchResult.people || searchResult.people.length === 0) {
       console.log(
         `No people found for domains: ${organizationDomains.join(", ")}`
       );
       return [];
     }
+
 
     // Group people by their organization domain
     const peopleByDomain: { [domain: string]: SearchResultPerson[] } = {};
