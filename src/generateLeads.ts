@@ -1,3 +1,5 @@
+//stable
+
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
@@ -1036,14 +1038,14 @@ export async function generateLeads(
         uniqueResults = await runActorPool(
           businessType,
           structuredSuburbs,
-          7,
+          70,
           stateAbbr  // Pass the state abbreviation here
         );
       } else {
         throw new Error(`Suburbs list for ${extractedLocation} not available.`);
       }
 
-      // Remove duplicates from the combined results
+      // Remove duplicates from the combined resultsk
       uniqueResults = removeDuplicates(uniqueResults);
     } else {
       console.log("Specific location detected, scraping Google Maps...");
