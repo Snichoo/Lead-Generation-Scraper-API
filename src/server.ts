@@ -53,7 +53,7 @@ app.get('/download', (req: Request, res: Response) => {
     return;
   }
 
-  const filepath = path.join(process.cwd(), "csv_files", filename);
+  const filepath = path.join('/tmp', 'csv_files', filename); // Use '/tmp' instead of process.cwd()
 
   if (fs.existsSync(filepath)) {
     res.setHeader('Content-Type', 'text/csv');

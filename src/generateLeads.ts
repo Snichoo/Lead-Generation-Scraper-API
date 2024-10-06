@@ -585,7 +585,7 @@ async function generateCSVFile(
   const filename = `${sanitizedBusinessType}_${sanitizedLocation}_${timestamp}.csv`;
 
   // Define the CSV file path
-  const filepath = path.join(process.cwd(), "csv_files", filename);
+  const filepath = path.join('/tmp', 'csv_files', filename); // Use '/tmp' instead of process.cwd()
 
   // Ensure the directory exists
   fs.mkdirSync(path.dirname(filepath), { recursive: true });
@@ -1323,6 +1323,8 @@ export async function generateLeads(
 
     // Return the filename and file size
     return { filename: csvResult.filename, fileSizeInBytes: csvResult.fileSizeInBytes };
+
+
 
   } catch (error) {
     console.error("Error in the lead generation process:", error);
