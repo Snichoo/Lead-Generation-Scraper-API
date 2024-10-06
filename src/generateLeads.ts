@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config({ path: '.env.local' }); // Adjust the path if needed
+
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
@@ -9,7 +12,6 @@ import pLimit from 'p-limit';
 import { createObjectCsvStringifier } from 'csv-writer';
 import { format } from 'date-fns';
 import { suburbsByCity } from "./suburbs.js";
-
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -60,6 +62,11 @@ interface EnrichmentMatch {
   last_name?: string;
   title?: string;
   linkedin_url?: string;
+  headline?: string;
+  organization?: {
+    name?: string;
+    // Include other fields if necessary
+  };
   // Add other properties as needed
 }
 
@@ -68,15 +75,18 @@ interface EnrichmentResult {
   // Add other properties as needed
 }
 
+// Function to call the mixed people search API and return the highest role persons for multiple domains
 async function getHighestRolePerson(
   organizationDomains: string[]
 ): Promise<{ id: string; title: string; domain: string }[]> {
+  console.log("getHighestRolePerson called with domains:", organizationDomains);
+
   const searchUrl = "https://api.apollo.io/v1/mixed_people/search";
 
   const searchData = {
-    q_organization_domains: organizationDomains, // Pass as an array
+    q_organization_domains: organizationDomains.join("\n"), // Join domains by new line character
     page: 1,
-    per_page: 10,
+    per_page: 100,
   };
 
   const headers = {
@@ -106,7 +116,6 @@ async function getHighestRolePerson(
       return [];
     }
 
-
     // Group people by their organization domain
     const peopleByDomain: { [domain: string]: SearchResultPerson[] } = {};
 
@@ -117,16 +126,18 @@ async function getHighestRolePerson(
           ? new URL(person.organization.website_url).hostname
           : null);
 
-      if (personDomain) {
-        const normalizedDomain = personDomain.toLowerCase().replace(/^www\./, "");
-        peopleByDomain[normalizedDomain] = peopleByDomain[normalizedDomain] || [];
-        peopleByDomain[normalizedDomain].push(person);
-      } else {
-        console.log("Person without organization domain:", person);
-      }
-    });
+// Inside the for-loop where you process each person
+const personDomainRaw = person.organization?.domain || (person.organization?.website_url ? new URL(person.organization.website_url).hostname : null);
 
-    console.log('People grouped by domain:', peopleByDomain);
+if (personDomainRaw) {
+  const normalizedPersonDomain = getRootDomain(personDomainRaw.toLowerCase());
+  peopleByDomain[normalizedPersonDomain] = peopleByDomain[normalizedPersonDomain] || [];
+  peopleByDomain[normalizedPersonDomain].push(person);
+} else {
+  console.log("Person without organization domain:", person);
+}
+
+    });
 
     const highestRolePersons: { id: string; title: string; domain: string }[] =
       [];
@@ -135,15 +146,13 @@ async function getHighestRolePerson(
     for (const domain of Object.keys(peopleByDomain)) {
       const people = peopleByDomain[domain];
 
-      console.log(`Processing domain: ${domain} with ${people.length} people`);
-
       // Clean up the result by extracting only 'id' and 'title'
       const cleanedResults = people.map((person: SearchResultPerson) => ({
         id: person.id,
         title: person.title,
       }));
 
-      console.log(`Cleaned results for domain ${domain}:`, cleanedResults);
+      console.log(`People for domain ${domain}:`, JSON.stringify(cleanedResults, null, 2));
 
       // Use GPT to find the person with the highest role
       const completion = await openai.beta.chat.completions.parse({
@@ -178,7 +187,7 @@ async function getHighestRolePerson(
       }
     }
 
-    console.log('Final highestRolePersons:', highestRolePersons);
+    console.log("Final highest role persons:", highestRolePersons);
 
     return highestRolePersons;
   } catch (error) {
@@ -187,13 +196,11 @@ async function getHighestRolePerson(
   }
 }
 
-
-
 async function enrichHighestRolePersons(
   highestRolePersons: { id: string; title: string; companyIndex: number }[],
   savedData: any[]
 ) {
-  console.log('enrichHighestRolePersons called with highestRolePersons:', highestRolePersons);
+  console.log("enrichHighestRolePersons called with highestRolePersons:", highestRolePersons);
 
   if (highestRolePersons.length === 0) {
     console.log("No highest role persons to enrich.");
@@ -240,8 +247,20 @@ async function enrichHighestRolePersons(
 
     const enrichmentResult: EnrichmentResult = await enrichmentResponse.json();
 
-    // Log the enrichment results
-    console.log(`Bulk Enrichment Results:`, enrichmentResult);
+    // Log the enrichment results with only important fields
+    console.log("Bulk Enrichment Results:");
+
+    enrichmentResult.matches.forEach((match) => {
+      const importantInfo = {
+        first_name: match.first_name,
+        last_name: match.last_name,
+        title: match.title,
+        headline: match.headline,
+        email: match.email,
+        organization_name: match.organization?.name || "",
+      };
+      console.log(importantInfo);
+    });
 
     // Map enriched matches by ID for easy lookup
     const enrichedMatchesMap: { [id: string]: EnrichmentMatch } = {};
@@ -249,7 +268,6 @@ async function enrichHighestRolePersons(
       enrichedMatchesMap[match.id] = match;
     });
 
-    console.log('Enriched matches mapped by ID:', enrichedMatchesMap);
 
     // Update the corresponding companies in savedData
     highestRolePersons.forEach((person) => {
@@ -546,37 +564,36 @@ async function generateCSVFile(
   });
 
   // Generate the CSV string
- // Generate the CSV string
- const header = csvStringifier.getHeaderString();
- const records = csvStringifier.stringifyRecords(csvData);
- const csvContent = header + records;
+  const header = csvStringifier.getHeaderString();
+  const records = csvStringifier.stringifyRecords(csvData);
+  const csvContent = header + records;
 
- // Sanitize business type and location for filename
- const sanitizedBusinessType = sanitizeFilename(businessType);
- const sanitizedLocation = sanitizeFilename(location);
+  // Sanitize business type and location for filename
+  const sanitizedBusinessType = sanitizeFilename(businessType);
+  const sanitizedLocation = sanitizeFilename(location);
 
- // Get current date and time (excluding seconds)
- const now = new Date();
- const timestamp = format(now, 'yyyy-MM-dd_HH-mm');
+  // Get current date and time (excluding seconds)
+  const now = new Date();
+  const timestamp = format(now, 'yyyy-MM-dd_HH-mm');
 
- const filename = `${sanitizedBusinessType}_${sanitizedLocation}_${timestamp}.csv`;
+  const filename = `${sanitizedBusinessType}_${sanitizedLocation}_${timestamp}.csv`;
 
- // Define the CSV file path
- const filepath = path.join(process.cwd(), "public", "csv", filename);
+  // Define the CSV file path
+  const filepath = path.join(process.cwd(), "csv_files", filename);
 
- // Ensure the directory exists
- fs.mkdirSync(path.dirname(filepath), { recursive: true });
+  // Ensure the directory exists
+  fs.mkdirSync(path.dirname(filepath), { recursive: true });
 
- // Save the CSV file
- fs.writeFileSync(filepath, csvContent);
+  // Save the CSV file
+  fs.writeFileSync(filepath, csvContent);
 
- console.log(`CSV file saved to ${filepath}`);
+  console.log(`CSV file saved to ${filepath}`);
 
- // Get the file size
- const stats = fs.statSync(filepath);
- const fileSizeInBytes = stats.size;
+  // Get the file size
+  const stats = fs.statSync(filepath);
+  const fileSizeInBytes = stats.size;
 
- return { filename, fileSizeInBytes }; // Return the filename and file size
+  return { filename, fileSizeInBytes }; // Return the filename and file size
 }
 
 // Function to filter large companies using Perplexity and remove them from savedData
@@ -925,9 +942,68 @@ const stateByCity: { [key: string]: string } = {
   bunbury: 'WA'
 };
 
+function getRootDomain(domain: string): string {
+  const publicSuffixes = ['com', 'org', 'net', 'edu', 'gov', 'au', 'co'];
+  const domainParts = domain.split('.');
+
+  // Handle domains with known public suffixes (e.g., 'com.au')
+  for (let i = domainParts.length - 1; i >= 0; i--) {
+    if (!publicSuffixes.includes(domainParts[i])) {
+      return domainParts.slice(i).join('.');
+    }
+  }
+
+  // If no known public suffix is found, return the domain as is
+  return domain;
+}
+
+// At the top of your generateLeads.ts file
+
+// At the top of your generateLeads.ts file
+
+const excludedDomains = new Set<string>([
+  'google.com',
+  'facebook.com',
+  'linkedin.com',
+  'amazon.com',
+  'microsoft.com',
+  'apple.com',
+  'instagram.com',
+  'twitter.com',
+  'youtube.com',
+  'wikipedia.org',
+  'yahoo.com',
+  'bing.com',
+  'baidu.com',
+  'tencent.com',
+  'alibaba.com',
+  'reddit.com',
+  // Add more big company domains as needed
+]);
+
+function isDomainExcluded(domain: string): boolean {
+  return excludedDomains.has(domain);
+}
+
+interface CompanyData {
+  id: string;
+  company_name: string;
+  address: string;
+  website?: string;
+  company_phone?: string;
+  company_personal_email?: string;
+  company_general_email?: string;
+  first_name?: string;
+  last_name?: string;
+  title?: string;
+  linkedin_url?: string;
+  [key: string]: any; // For additional properties
+}
+
 
 
 // In your generateLeads function, use generateCSVFile instead of generateCSVData
+// In your generateLeads function, add more console logs
 export async function generateLeads(
   businessType: string,
   locationInput: string
@@ -991,13 +1067,13 @@ export async function generateLeads(
       // Remove duplicates in case of single-location scraping
       uniqueResults = removeDuplicates(results);
     }
-    
 
     // Save final results to JSON file
     saveToFile("finalResults.json", uniqueResults);
 
     // Read saved JSON file and assign IDs to each company
-    let savedData: any[] = readJsonFromFile("finalResults.json");
+    let savedData: CompanyData[] = readJsonFromFile("finalResults.json");
+
 
     // Check if no leads were found after initial scraping
     if (savedData.length === 0) {
@@ -1023,6 +1099,8 @@ export async function generateLeads(
 
     // Save updated savedData back to finalResults.json
     saveToFile("finalResults.json", savedData);
+
+    console.log("Saved Data after assigning IDs:", JSON.stringify(savedData, null, 2));
 
     // New Step: Filter large companies using Perplexity
     console.log("Filtering large companies using Perplexity...");
@@ -1054,51 +1132,84 @@ export async function generateLeads(
       ids.forEach((id) => largeCompanyIds.add(id));
     });
 
+    console.log("Large company IDs to remove:", Array.from(largeCompanyIds));
+
     // Now, remove the companies with IDs in largeCompanyIds from savedData
     savedData = savedData.filter((company) => !largeCompanyIds.has(company.id));
 
     // Save the updated savedData back to finalResults.json
     saveToFile("finalResults.json", savedData);
 
+    console.log("Saved Data after filtering large companies:", JSON.stringify(savedData, null, 2));
+
     // Proceed with the rest of the lead generation process using the filtered savedData
 
-// Proceed with the rest of the lead generation process using the filtered savedData
 
-console.log('Proceeding with lead generation using filtered savedData.');
-console.log('Number of companies in savedData:', savedData.length);
+    const highestRolePersons: {
+      id: string;
+      title: string;
+      domain: string;
+      companyIndex: number;
+    }[] = [];
+    
+    let domainsBatch: string[] = [];
+    let domainToCompanyIndex: { [domain: string]: number } = {};
+    
+    for (let index = 0; index < savedData.length; index++) {
+      const company: CompanyData = savedData[index];
+      console.log(`Processing company at index ${index}:`, company);
+    
+      if (company.website) {
+        const websiteDomain: string = getRootDomain(
+          new URL(company.website).hostname.toLowerCase()
+        );
+    
+        if (isDomainExcluded(websiteDomain)) {
+          console.log(`Excluded domain ${websiteDomain} from processing.`);
+          continue; // Skip this company
+        }
+    
+        domainsBatch.push(websiteDomain);
+        domainToCompanyIndex[websiteDomain] = index;
+    
+        // When we have collected enough domains, process them
+        if (domainsBatch.length === 10) {
+          console.log("Processing domains batch:", domainsBatch);
+          const highestRolePersonsBatch = await getHighestRolePerson(domainsBatch);
+    
+          console.log("Highest role persons found:", highestRolePersonsBatch);
 
-const highestRolePersons: {
-  id: string;
-  title: string;
-  domain: string;
-  companyIndex: number;
-}[] = [];
+          for (const person of highestRolePersonsBatch) {
+            const normalizedDomain = getRootDomain(person.domain.toLowerCase());
+            const companyIndex = domainToCompanyIndex[normalizedDomain];
+          
+            if (companyIndex === undefined) {
+              console.error(`Company index not found for domain ${normalizedDomain}`);
+            } else {
+              highestRolePersons.push({ ...person, companyIndex });
 
-let domainsBatch: string[] = [];
-let domainToCompanyIndex: { [domain: string]: number } = {};
+              // When we have collected 10 highest role persons, enrich them
+              if (highestRolePersons.length === 10) {
+                console.log("Enriching highest role persons:", highestRolePersons);
+                await enrichHighestRolePersons(highestRolePersons, savedData);
+                highestRolePersons.length = 0; // Reset the array
+              }
+            }
+          }
 
-for (let index = 0; index < savedData.length; index++) {
-  const company = savedData[index];
-  console.log(`Processing company at index ${index}:`, company);
+          // Clear the domainsBatch and domainToCompanyIndex
+          domainsBatch = [];
+          domainToCompanyIndex = {};
+        }
+      }
+    }
 
-  if (company.website) {
-    const websiteDomain = new URL(company.website)
-      .hostname.toLowerCase()
-      .replace(/^www\./, "");
-    console.log(`Extracted website domain: ${websiteDomain}`);
-
-    domainsBatch.push(websiteDomain);
-    domainToCompanyIndex[websiteDomain] = index;
-
-    // When we have collected enough domains, process them
-    if (domainsBatch.length === 10) {
-      console.log('Domains batch is full. Calling getHighestRolePerson with domainsBatch:', domainsBatch);
-
-      const highestRolePersonsBatch = await getHighestRolePerson(
-        domainsBatch
-      );
-
-      console.log('Received highestRolePersonsBatch:', highestRolePersonsBatch);
+    // Process any remaining domains
+    if (domainsBatch.length > 0) {
+      console.log("Processing remaining domains batch:", domainsBatch);
+      const highestRolePersonsBatch = await getHighestRolePerson(domainsBatch);
+    
+      console.log("Highest role persons found:", highestRolePersonsBatch);
 
       for (const person of highestRolePersonsBatch) {
         const normalizedDomain = person.domain.toLowerCase().replace(/^www\./, "");
@@ -1109,14 +1220,11 @@ for (let index = 0; index < savedData.length; index++) {
             `Company index not found for domain ${normalizedDomain}`
           );
         } else {
-          console.log(`Mapping person to company index ${companyIndex}:`, person);
-
           highestRolePersons.push({ ...person, companyIndex });
 
-          // When we have collected 10 highest role persons, enrich them
+          // Enrich when we have 10 records
           if (highestRolePersons.length === 10) {
-            console.log('HighestRolePersons batch is full. Calling enrichHighestRolePersons.');
-
+            console.log("Enriching highest role persons:", highestRolePersons);
             await enrichHighestRolePersons(highestRolePersons, savedData);
             highestRolePersons.length = 0; // Reset the array
           }
@@ -1127,53 +1235,12 @@ for (let index = 0; index < savedData.length; index++) {
       domainsBatch = [];
       domainToCompanyIndex = {};
     }
-  } else {
-    console.log(`Company at index ${index} does not have a website.`);
-  }
-}
 
-// Process any remaining domains
-if (domainsBatch.length > 0) {
-  console.log('Processing remaining domains in domainsBatch:', domainsBatch);
-
-  const highestRolePersonsBatch = await getHighestRolePerson(domainsBatch);
-
-  console.log('Received highestRolePersonsBatch:', highestRolePersonsBatch);
-
-  for (const person of highestRolePersonsBatch) {
-    const normalizedDomain = person.domain.toLowerCase().replace(/^www\./, "");
-    const companyIndex = domainToCompanyIndex[normalizedDomain];
-
-    if (companyIndex === undefined) {
-      console.error(
-        `Company index not found for domain ${normalizedDomain}`
-      );
-    } else {
-      console.log(`Mapping person to company index ${companyIndex}:`, person);
-
-      highestRolePersons.push({ ...person, companyIndex });
-
-      // Enrich when we have 10 records
-      if (highestRolePersons.length === 10) {
-        console.log('HighestRolePersons batch is full. Calling enrichHighestRolePersons.');
-
-        await enrichHighestRolePersons(highestRolePersons, savedData);
-        highestRolePersons.length = 0; // Reset the array
-      }
+    // Enrich any remaining highest role persons less than 10
+    if (highestRolePersons.length > 0) {
+      console.log("Enriching remaining highest role persons:", highestRolePersons);
+      await enrichHighestRolePersons(highestRolePersons, savedData);
     }
-  }
-
-  // Clear the domainsBatch and domainToCompanyIndex
-  domainsBatch = [];
-  domainToCompanyIndex = {};
-}
-
-// Enrich any remaining highest role persons less than 10
-if (highestRolePersons.length > 0) {
-  console.log('Enriching remaining highestRolePersons:', highestRolePersons);
-
-  await enrichHighestRolePersons(highestRolePersons, savedData);
-}
 
     // Save the updated savedData back to finalResults.json
     saveToFile("finalResults.json", savedData);
@@ -1201,6 +1268,8 @@ if (highestRolePersons.length > 0) {
         });
       }
     }
+
+    console.log("Companies without email to process:", companiesWithoutEmail);
 
     // Proceed to process companies without email if any
     if (companiesWithoutEmail.length > 0) {
