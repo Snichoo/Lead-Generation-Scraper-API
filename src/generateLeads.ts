@@ -1038,7 +1038,7 @@ export async function generateLeads(
         uniqueResults = await runActorPool(
           businessType,
           structuredSuburbs,
-          35,
+          15,
           stateAbbr  // Pass the state abbreviation here
         );
       } else {
