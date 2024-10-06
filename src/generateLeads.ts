@@ -1045,7 +1045,7 @@ export async function generateLeads(
         throw new Error(`Suburbs list for ${extractedLocation} not available.`);
       }
 
-      // Remove duplicates from the combined results
+      // Remove duplicates from the combined resultsk
       uniqueResults = removeDuplicates(uniqueResults);
     } else {
       console.log("Specific location detected, scraping Google Maps...");
