@@ -360,7 +360,7 @@ async function scrapeGoogleMaps(
   };
 
   try {
-    const response = await axios.post(endpoint, requestData, { headers, timeout: 300000 }); // Set 60 seconds timeout
+    const response = await axios.post(endpoint, requestData, { headers, timeout: 300000 }); 
 
     if (response.status !== 200) {
       throw new Error(`Error fetching data: ${response.statusText}`);
@@ -464,6 +464,7 @@ async function runActorPool(
           })
           .catch((error) => {
             console.error(`Error running actor for suburb: ${suburb}`, error);
+            reject
           })
           .finally(() => {
             activeCount--;
@@ -478,7 +479,7 @@ async function runActorPool(
     }
 
     runNextActor();
-  }).then(() => Promise.all(allPromises).then(() => allResults));
+  }).then(() => Promise.all(allPromises).then(() => allResults))
 }
 
 
