@@ -506,6 +506,7 @@ function parseAddress(address: string) {
 }
 
 // Replace your existing generateCSVData function with this
+// Replace your existing generateCSVFile function with this
 async function generateCSVFile(
   businessType: string,
   location: string,
@@ -524,6 +525,8 @@ async function generateCSVFile(
       { id: "last_name", title: "Last Name" },
       { id: "personal_email", title: "Personal Email Address" },
       { id: "company_email", title: "Company Email Address" },
+      // Added new column for merged emails
+      { id: "merged_email", title: "Merged Email" },
       { id: "phone_number", title: "Phone Number" },
       { id: "linkedin", title: "LinkedIn" },
       { id: "website", title: "Website" },
@@ -548,6 +551,10 @@ async function generateCSVFile(
       last_name: item.last_name || "",
       personal_email: item.company_personal_email || "",
       company_email: item.company_general_email || "",
+      // Merging both emails into one column
+      merged_email: [item.company_personal_email, item.company_general_email]
+        .filter(Boolean)
+        .join("; "),
       phone_number: item.company_phone || "",
       linkedin: item.linkedin_url || "",
       website: item.website || "",
@@ -594,6 +601,7 @@ async function generateCSVFile(
 
   return { filename, fileSizeInBytes }; // Return the filename and file size
 }
+
 
 // Function to filter large companies using Perplexity and remove them from savedData
 async function filterLargeCompanies(companies: any[]): Promise<string[]> {
