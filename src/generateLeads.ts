@@ -1,6 +1,3 @@
-import * as dotenv from 'dotenv';
-dotenv.config({ path: '.env.local' }); // Adjust the path if needed
-
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
