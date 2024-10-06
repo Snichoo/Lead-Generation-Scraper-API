@@ -1034,11 +1034,11 @@ export async function generateLeads(
   
         console.log("Structured Suburb List:", structuredSuburbs);
   
-        // Pass the state abbreviation to runActorPool
+        // Pass the state abbreviation to runActorPoolj
         uniqueResults = await runActorPool(
           businessType,
           structuredSuburbs,
-          70,
+          35,
           stateAbbr  // Pass the state abbreviation here
         );
       } else {
