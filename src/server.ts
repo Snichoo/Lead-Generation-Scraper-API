@@ -21,7 +21,7 @@ app.post('/generate-leads', async (req: Request, res: Response): Promise<void> =
   }
 
   try {
-    console.log(`Starting lead generation for businessType: ${businessType}, location: ${location}`);
+    console.log(`Starting lead generation for businessType: ${businessType}, location: ${location}, leadCount: ${leadCount}`);
     const result = await generateLeads(businessType, location, leadCount);
 
     if (result.error) {
@@ -36,6 +36,7 @@ app.post('/generate-leads', async (req: Request, res: Response): Promise<void> =
     res.status(500).json({ error: 'An error occurred while generating leads.' });
   }
 });
+
 
 // Update the download endpoint to use the filename from the query parameter
 app.get('/download', (req: Request, res: Response) => {
