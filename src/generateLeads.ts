@@ -11,6 +11,7 @@ import pLimit from 'p-limit';
 import { createObjectCsvStringifier } from 'csv-writer';
 import { format } from 'date-fns';
 import { suburbsByCity } from "./suburbs.js";
+import Bottleneck from 'bottleneck';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -1132,7 +1133,7 @@ export async function generateLeads(
     }
 
     // Assign an id to each company
-    for (let i = 0; i < savedData.length; i++) {
+    for (let i = 0; i < savedData.length; i++) {0
       // Generate an id (not too short)
       savedData[i].id = `company_${i}_${Date.now()}`;
     }
@@ -1288,19 +1289,19 @@ export async function generateLeads(
     // --- New Step: Find company emails for companies without email ---
 
     // Identify companies without both personal and general emails and with website
+    // Identify companies without both personal and general emails and with website
     const companiesWithoutEmail = [];
 
     for (let index = 0; index < savedData.length; index++) {
       const company = savedData[index];
       if (
         (!company.company_personal_email ||
-          company.company_personal_email.trim() === "") &&
+          company.company_personal_email.trim() === '') &&
         (!company.company_general_email ||
-          company.company_general_email.trim() === "") &&
+          company.company_general_email.trim() === '') &&
         company.website
       ) {
-        const websiteDomain = new URL(company.website)
-          .hostname.replace(/^www\./, "");
+        const websiteDomain = new URL(company.website).hostname.replace(/^www\./, '');
         companiesWithoutEmail.push({
           index,
           website: company.website,
@@ -1309,24 +1310,46 @@ export async function generateLeads(
       }
     }
 
-    console.log("Companies without email to process:", companiesWithoutEmail);
+    console.log('Companies without email to process:', companiesWithoutEmail);
 
     // Proceed to process companies without email if any
     if (companiesWithoutEmail.length > 0) {
-      console.log("Running email scraper for companies without email...");
+      console.log('Running email scraper for companies without email...');
 
-      const limit = pLimit(5); // Limit concurrency to 5
+      const maxConcurrency = 40;
 
-      const crawlPromises = companiesWithoutEmail.map((company) =>
-        limit(async () => {
-          const emails = await crawlWebsite(company.website);
-          if (emails.length > 0) {
+      // Create a Bottleneck limiter
+      const limiter = new Bottleneck({
+        maxConcurrent: maxConcurrency,
+        minTime: 0, // We'll manage delays manually
+      });
+
+      // Function to process each company
+      const processCompany = async (company: any, index: number) => {
+        try {
+          // Implement delays
+          if (index < 10) {
+            // First 10 requests with 5 sec delay
+            await delay(5000);
+          } else {
+            // Subsequent requests with 1 sec delay
+            await delay(1000);
+          }
+
+          // Make API call to the email scraper service
+          const response = await axios.post('https://emailscraperservice-54137747006.us-central1.run.app', {
+            website: company.website,
+          });
+
+          const emails = response.data.emails;
+
+          if (emails && emails.length > 0) {
             // Update the company in savedData
             const companyIndex = company.index;
             const companyInSavedData = savedData[companyIndex];
             if (
               !companyInSavedData.company_general_email ||
-              companyInSavedData.company_general_email.trim() === ""
+              companyInSavedData.company_general_email.trim() === ''
             ) {
               companyInSavedData.company_general_email = emails[0]; // Take the first email
               console.log(
@@ -1336,15 +1359,24 @@ export async function generateLeads(
           } else {
             console.log(`No emails found for website: ${company.website}`);
           }
-        })
+        } catch (error) {
+          console.error(`Error scraping emails for website: ${company.website}`, error);
+        } finally {
+          console.log(`Processed company without email: ${company.website}`);
+        }
+      };
+
+      // Schedule all requests
+      const promises = companiesWithoutEmail.map((company, index) =>
+        limiter.schedule(() => processCompany(company, index))
       );
 
-      await Promise.all(crawlPromises);
+      await Promise.all(promises);
 
       // Save the updated savedData back to finalResults.json
-      saveToFile("finalResults.json", savedData);
+      saveToFile('finalResults.json', savedData);
     } else {
-      console.log("No companies without email found.");
+      console.log('No companies without email found.');
     }
 
     // Generate the CSV file
