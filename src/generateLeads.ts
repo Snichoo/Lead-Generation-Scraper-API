@@ -860,7 +860,13 @@ async function crawlWebsite(startUrl: string): Promise<string[]> {
     queue.push(new URL(path, baseUrl).toString());
   }
 
+  const maxCrawlTime = 30000; // 30 seconds per website
+  const crawlStartTime = Date.now();
   while (queue.length > 0 && pagesCrawled < maxPages && !emailFound) {
+    if (Date.now() - crawlStartTime > maxCrawlTime) {
+      console.log(`Crawl time exceeded for ${startUrl}`);
+      break;
+    }
     const currentUrl = queue.shift();
 
     if (!currentUrl) continue;
