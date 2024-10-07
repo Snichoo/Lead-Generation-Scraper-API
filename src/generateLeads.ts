@@ -347,7 +347,7 @@ async function scrapeGoogleMaps(
 ): Promise<any[]> {
   const apiKey = process.env.RENDER_API_KEY || ""; // Include your API key if required
 
-  const endpoint = "https://scraper-pls-work-54137747006.us-central1.run.app/search";
+  const endpoint = "https://new-map-scraper-54137747006.us-central1.run.app/search";
 
   const requestData = {
     business_type: businessType,
