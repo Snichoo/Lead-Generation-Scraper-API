@@ -433,20 +433,35 @@ function normalizeUrl(urlStr: string): string {
   }
 }
 
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function runActorPool(
   businessType: string,
   suburbs: string[],
   maxConcurrency: number,
-  stateAbbr: string  // Accept the state abbreviation here
+  stateAbbr: string
 ): Promise<any[]> {
   const allResults: any[] = [];
-  const allPromises: Promise<void>[] = [];
+  const limit = pLimit(maxConcurrency); // Limit concurrency to maxConcurrency
+  const delayBetweenRequests = 1000; // 1 second
+
   let activeCount = 0;
   let nextIndex = 0;
 
-  return new Promise<void>((resolve, reject) => {
-    function runNextActor() {
-      while (activeCount < maxConcurrency && nextIndex < suburbs.length) {
+  return new Promise<any[]>((resolve, reject) => {
+    const intervalId = setInterval(async () => {
+      if (nextIndex >= suburbs.length && activeCount === 0) {
+        clearInterval(intervalId);
+        resolve(allResults);
+        return;
+      }
+
+      if (activeCount >= maxConcurrency) {
+        // Do not start more requests until some finish
+        return;
+      }
+
+      if (nextIndex < suburbs.length) {
         let suburb = suburbs[nextIndex++].trim();
         activeCount++;
 
@@ -457,29 +472,22 @@ async function runActorPool(
         }
 
         console.log(`Starting actor for suburb: ${suburb}`);
-        const actorPromise = scrapeGoogleMaps(businessType, suburb)
+
+        // Use p-limit to control concurrency
+        limit(() => scrapeGoogleMaps(businessType, suburb))
           .then((results) => {
             console.log(`Actor completed for suburb: ${suburb}`);
             allResults.push(...results);
           })
           .catch((error) => {
             console.error(`Error running actor for suburb: ${suburb}`, error);
-            reject
           })
           .finally(() => {
             activeCount--;
-            if (activeCount === 0 && nextIndex >= suburbs.length) {
-              resolve();
-            } else {
-              runNextActor();
-            }
           });
-        allPromises.push(actorPromise);
       }
-    }
-
-    runNextActor();
-  }).then(() => Promise.all(allPromises).then(() => allResults))
+    }, delayBetweenRequests); // Start a new request every 1 second
+  });
 }
 
 
@@ -1027,36 +1035,38 @@ export async function generateLeads(
 
     let uniqueResults;
 
-    if (locationCheckResult === "yes") {
-      console.log("Broad location detected, fetching list of suburbs...");
-      let structuredSuburbs = [];
+// Inside your generateLeads function
+if (locationCheckResult === "yes") {
+  console.log("Broad location detected, fetching list of suburbs...");
+  let structuredSuburbs = [];
 
-      const cityKey = normalizeCityName(extractedLocation);
+  const cityKey = normalizeCityName(extractedLocation);
 
-      if (suburbsByCity[cityKey]) {
-        structuredSuburbs = suburbsByCity[cityKey];
-        // Get the state abbreviation for the city
-        const stateAbbr = stateByCity[cityKey];
-        if (!stateAbbr) {
-          throw new Error(`State abbreviation for ${extractedLocation} not found.`);
-        }
-  
-        console.log("Structured Suburb List:", structuredSuburbs);
-  
-        // Pass the state abbreviation to runActorPoolj
-        uniqueResults = await runActorPool(
-          businessType,
-          structuredSuburbs,
-          40,
-          stateAbbr  // Pass the state abbreviation here
-        );
-      } else {
-        throw new Error(`Suburbs list for ${extractedLocation} not available.`);
-      }
+  if (suburbsByCity[cityKey]) {
+    structuredSuburbs = suburbsByCity[cityKey];
+    // Get the state abbreviation for the city
+    const stateAbbr = stateByCity[cityKey];
+    if (!stateAbbr) {
+      throw new Error(`State abbreviation for ${extractedLocation} not found.`);
+    }
 
-      // Remove duplicates from the combined resultsk
-      uniqueResults = removeDuplicates(uniqueResults);
-    } else {
+    console.log("Structured Suburb List:", structuredSuburbs);
+
+    // Pass the state abbreviation to runActorPool
+    uniqueResults = await runActorPool(
+      businessType,
+      structuredSuburbs,
+      50,           // Max concurrency
+      stateAbbr     // State abbreviation
+    );
+  } else {
+    throw new Error(`Suburbs list for ${extractedLocation} not available.`);
+  }
+
+  // Remove duplicates from the combined results
+  uniqueResults = removeDuplicates(uniqueResults);
+}
+ else {
       console.log("Specific location detected, scraping Google Maps...");
     
       // Attempt to find the state abbreviation for the extracted location

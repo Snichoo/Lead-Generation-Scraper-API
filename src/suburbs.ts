@@ -282,7 +282,7 @@ export const newcastleSuburbsList = [
 ];
 
 export const canberraSuburbsList = [
-    "Belconnen", "Aranda", "Belconnen Town Centre", "Emu Ridge", "Bruce", 
+    "Canberra","Belconnen", "Aranda", "Belconnen Town Centre", "Emu Ridge", "Bruce", 
     "Charnwood", "Cook", "Dunlop", "Evatt", "Florey", "Flynn", 
     "Fraser", "Giralang", "Hawker", "Harrison", "Higgins", 
     "Holt", "Kaleen", "Latham", "Lawson", "Macgregor", 
