@@ -1316,7 +1316,7 @@ export async function generateLeads(
     if (companiesWithoutEmail.length > 0) {
       console.log('Running email scraper for companies without email...');
 
-      const maxConcurrency = 40;
+      const maxConcurrency = 10;
 
       // Create a Bottleneck limiter
       const limiter = new Bottleneck({
