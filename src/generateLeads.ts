@@ -74,6 +74,22 @@ interface EnrichmentResult {
   // Add other properties as needed
 }
 
+// Place 'getRootDomain' function near the top
+function getRootDomain(domain: string): string {
+  const publicSuffixes = ['com', 'org', 'net', 'edu', 'gov', 'au', 'co'];
+  const domainParts = domain.split('.');
+
+  // Handle domains with known public suffixes (e.g., 'com.au')
+  for (let i = domainParts.length - 1; i >= 0; i--) {
+    if (!publicSuffixes.includes(domainParts[i])) {
+      return domainParts.slice(i).join('.');
+    }
+  }
+
+  // If no known public suffix is found, return the domain as is
+  return domain;
+}
+
 // Function to call the mixed people search API and return the highest role persons for multiple domains
 async function getHighestRolePerson(
   organizationDomains: string[]
@@ -343,7 +359,8 @@ function extractSuburbOrCity(locationInput: string): string {
 
 async function scrapeGoogleMaps(
   businessType: string,
-  location: string
+  location: string,
+  leadCount?: number
 ): Promise<any[]> {
   const apiKey = process.env.RENDER_API_KEY || ""; // Include your API key if required
 
@@ -352,6 +369,7 @@ async function scrapeGoogleMaps(
   const requestData = {
     business_type: businessType,
     location: location,
+    lead_count: leadCount,
   };
 
   const headers = {
@@ -436,18 +454,24 @@ function normalizeUrl(urlStr: string): string {
 // Function to delay execution for a given number of milliseconds
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Ensure 'runActorPool' function is corrected
 async function runActorPool(
   businessType: string,
   suburbs: string[],
   maxConcurrency: number,
-  stateAbbr: string
+  stateAbbr: string,
+  leadCount?: number
 ): Promise<any[]> {
   const allResults: any[] = [];
-  const limit = pLimit(maxConcurrency); // Limit concurrency to maxConcurrency
-
+  const limit = pLimit(maxConcurrency);
   const tasks: Promise<void>[] = [];
+  let totalLeadsCollected = 0;
 
   for (let i = 0; i < suburbs.length; i++) {
+    if (leadCount && totalLeadsCollected >= leadCount) {
+      break;
+    }
+
     let suburb = suburbs[i].trim();
 
     // Check if suburb already ends with the state abbreviation
@@ -460,10 +484,21 @@ async function runActorPool(
 
     // Start the request with p-limit to control concurrency
     const task = limit(async () => {
+      if (leadCount && totalLeadsCollected >= leadCount) {
+        return;
+      }
       try {
-        const results = await scrapeGoogleMaps(businessType, suburb);
-        console.log(`Actor completed for suburb: ${suburb}`);
-        allResults.push(...results);
+        const results = await scrapeGoogleMaps(businessType, suburb, leadCount);
+
+        if (leadCount) {
+          const remainingLeads = leadCount - totalLeadsCollected;
+          const limitedResults = results.slice(0, remainingLeads);
+          allResults.push(...limitedResults);
+          totalLeadsCollected += limitedResults.length;
+        } else {
+          allResults.push(...results);
+          totalLeadsCollected += results.length;
+        }
       } catch (error) {
         console.error(`Error running actor for suburb: ${suburb}`, error);
       }
@@ -951,21 +986,6 @@ const stateByCity: { [key: string]: string } = {
   bunbury: 'WA'
 };
 
-function getRootDomain(domain: string): string {
-  const publicSuffixes = ['com', 'org', 'net', 'edu', 'gov', 'au', 'co'];
-  const domainParts = domain.split('.');
-
-  // Handle domains with known public suffixes (e.g., 'com.au')
-  for (let i = domainParts.length - 1; i >= 0; i--) {
-    if (!publicSuffixes.includes(domainParts[i])) {
-      return domainParts.slice(i).join('.');
-    }
-  }
-
-  // If no known public suffix is found, return the domain as is
-  return domain;
-}
-
 // At the top of your generateLeads.ts file
 
 // At the top of your generateLeads.ts file
@@ -1011,11 +1031,11 @@ interface CompanyData {
 
 
 
-// In your generateLeads function, use generateCSVFile instead of generateCSVData
-// In your generateLeads function, add more console logs
+// Corrected 'generateLeads' function
 export async function generateLeads(
   businessType: string,
-  locationInput: string
+  locationInput: string,
+  leadCount?: number
 ): Promise<{ filename?: string; fileSizeInBytes?: number; error?: string }> {
   try {
     // Extract the suburb or city from the user's location input
@@ -1028,53 +1048,56 @@ export async function generateLeads(
 
     let uniqueResults;
 
-// Inside your generateLeads function
-if (locationCheckResult === "yes") {
-  console.log("Broad location detected, fetching list of suburbs...");
-  let structuredSuburbs = [];
+    if (locationCheckResult === "yes") {
+      console.log("Broad location detected, fetching list of suburbs...");
+      let structuredSuburbs = [];
 
-  const cityKey = normalizeCityName(extractedLocation);
+      const cityKey = normalizeCityName(extractedLocation);
 
-  if (suburbsByCity[cityKey]) {
-    structuredSuburbs = suburbsByCity[cityKey];
-    // Get the state abbreviation for the city
-    const stateAbbr = stateByCity[cityKey];
-    if (!stateAbbr) {
-      throw new Error(`State abbreviation for ${extractedLocation} not found.`);
-    }
+      if (suburbsByCity[cityKey]) {
+        structuredSuburbs = suburbsByCity[cityKey];
+        // Get the state abbreviation for the city
+        const stateAbbr = stateByCity[cityKey];
+        if (!stateAbbr) {
+          throw new Error(`State abbreviation for ${extractedLocation} not found.`);
+        }
 
-    console.log("Structured Suburb List:", structuredSuburbs);
+        console.log("Structured Suburb List:", structuredSuburbs);
 
-    // Pass the state abbreviation to runActorPool
-    uniqueResults = await runActorPool(
-      businessType,
-      structuredSuburbs,
-      50,           // Max concurrency
-      stateAbbr     // State abbreviation
-    );
-  } else {
-    throw new Error(`Suburbs list for ${extractedLocation} not available.`);
-  }
+        uniqueResults = await runActorPool(
+          businessType,
+          structuredSuburbs,
+          50,
+          stateAbbr,
+          leadCount
+        );
 
-  // Remove duplicates from the combined results
-  uniqueResults = removeDuplicates(uniqueResults);
-}
- else {
+        // Remove duplicates from the combined results
+        uniqueResults = removeDuplicates(uniqueResults);
+
+        // Limit the number of leads if leadCount is specified
+        if (leadCount && uniqueResults.length > leadCount) {
+          uniqueResults = uniqueResults.slice(0, leadCount);
+        }
+      } else {
+        throw new Error(`Suburbs list for ${extractedLocation} not available.`);
+      }
+    } else {
       console.log("Specific location detected, scraping Google Maps...");
-    
+
       // Attempt to find the state abbreviation for the extracted location
       const cityKey = normalizeCityName(extractedLocation);
       let stateAbbr = stateByCity[cityKey];
-    
+
       let locationToUse = extractedLocation;
       if (stateAbbr) {
         locationToUse = `${extractedLocation} ${stateAbbr}`;
       } else {
         console.warn(`State abbreviation for ${extractedLocation} not found. Using default location.`);
       }
-    
-      const results = await scrapeGoogleMaps(businessType, locationToUse);
-    
+
+      const results = await scrapeGoogleMaps(businessType, locationToUse, leadCount);
+
       // Remove duplicates in case of single-location scraping
       uniqueResults = removeDuplicates(results);
     }
