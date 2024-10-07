@@ -433,6 +433,7 @@ function normalizeUrl(urlStr: string): string {
   }
 }
 
+// Function to delay execution for a given number of milliseconds
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function runActorPool(
@@ -443,51 +444,43 @@ async function runActorPool(
 ): Promise<any[]> {
   const allResults: any[] = [];
   const limit = pLimit(maxConcurrency); // Limit concurrency to maxConcurrency
-  const delayBetweenRequests = 1000; // 1 second
 
-  let activeCount = 0;
-  let nextIndex = 0;
+  const tasks: Promise<void>[] = [];
 
-  return new Promise<any[]>((resolve, reject) => {
-    const intervalId = setInterval(async () => {
-      if (nextIndex >= suburbs.length && activeCount === 0) {
-        clearInterval(intervalId);
-        resolve(allResults);
-        return;
+  for (let i = 0; i < suburbs.length; i++) {
+    let suburb = suburbs[i].trim();
+
+    // Check if suburb already ends with the state abbreviation
+    const suburbLower = suburb.toLowerCase();
+    if (!suburbLower.endsWith(` ${stateAbbr.toLowerCase()}`)) {
+      suburb = `${suburb} ${stateAbbr}`;
+    }
+
+    console.log(`Starting actor for suburb: ${suburb}`);
+
+    // Start the request with p-limit to control concurrency
+    const task = limit(async () => {
+      try {
+        const results = await scrapeGoogleMaps(businessType, suburb);
+        console.log(`Actor completed for suburb: ${suburb}`);
+        allResults.push(...results);
+      } catch (error) {
+        console.error(`Error running actor for suburb: ${suburb}`, error);
       }
+    });
 
-      if (activeCount >= maxConcurrency) {
-        // Do not start more requests until some finish
-        return;
-      }
+    tasks.push(task);
 
-      if (nextIndex < suburbs.length) {
-        let suburb = suburbs[nextIndex++].trim();
-        activeCount++;
+    // Determine the delay
+    const delayBetweenRequests = i < 20 ? 5000 : 1000;
 
-        // Check if suburb already ends with the state abbreviation
-        const suburbLower = suburb.toLowerCase();
-        if (!suburbLower.endsWith(` ${stateAbbr.toLowerCase()}`)) {
-          suburb = `${suburb} ${stateAbbr}`;
-        }
+    await delay(delayBetweenRequests);
+  }
 
-        console.log(`Starting actor for suburb: ${suburb}`);
+  // Wait for all tasks to complete
+  await Promise.all(tasks);
 
-        // Use p-limit to control concurrency
-        limit(() => scrapeGoogleMaps(businessType, suburb))
-          .then((results) => {
-            console.log(`Actor completed for suburb: ${suburb}`);
-            allResults.push(...results);
-          })
-          .catch((error) => {
-            console.error(`Error running actor for suburb: ${suburb}`, error);
-          })
-          .finally(() => {
-            activeCount--;
-          });
-      }
-    }, delayBetweenRequests); // Start a new request every 1 second
-  });
+  return allResults;
 }
 
 
