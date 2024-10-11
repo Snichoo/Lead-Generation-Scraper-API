@@ -1,4 +1,5 @@
-//stable
+import dotenv from 'dotenv';
+dotenv.config();
 
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
@@ -40,19 +41,19 @@ interface Organization {
   name?: string;
   domain?: string;
   website_url?: string;
-  // Add other properties if needed
 }
 
 interface SearchResultPerson {
   id: string;
+  first_name: string;
+  last_name: string;
   title: string;
+  organization_id: string;
   organization: Organization;
-  // Add other properties as needed
 }
 
 interface SearchResult {
   people: SearchResultPerson[];
-  // Add other properties as needed
 }
 
 interface EnrichmentMatch {
@@ -65,14 +66,11 @@ interface EnrichmentMatch {
   headline?: string;
   organization?: {
     name?: string;
-    // Include other fields if necessary
   };
-  // Add other properties as needed
 }
 
 interface EnrichmentResult {
   matches: EnrichmentMatch[];
-  // Add other properties as needed
 }
 
 // Place 'getRootDomain' function near the top
@@ -94,13 +92,13 @@ function getRootDomain(domain: string): string {
 // Function to call the mixed people search API and return the highest role persons for multiple domains
 async function getHighestRolePerson(
   organizationDomains: string[]
-): Promise<{ id: string; title: string; domain: string }[]> {
+): Promise<{ id: string; first_name: string; last_name: string; organization_id: string; title: string; domain: string }[]> {
   console.log("getHighestRolePerson called with domains:", organizationDomains);
 
   const searchUrl = "https://api.apollo.io/v1/mixed_people/search";
 
   const searchData = {
-    q_organization_domains: organizationDomains.join("\n"), // Join domains by new line character
+    q_organization_domains: organizationDomains.join("\n"),
     page: 1,
     per_page: 100,
   };
@@ -142,30 +140,28 @@ async function getHighestRolePerson(
           ? new URL(person.organization.website_url).hostname
           : null);
 
-// Inside the for-loop where you process each person
-const personDomainRaw = person.organization?.domain || (person.organization?.website_url ? new URL(person.organization.website_url).hostname : null);
-
-if (personDomainRaw) {
-  const normalizedPersonDomain = getRootDomain(personDomainRaw.toLowerCase());
-  peopleByDomain[normalizedPersonDomain] = peopleByDomain[normalizedPersonDomain] || [];
-  peopleByDomain[normalizedPersonDomain].push(person);
-} else {
-  console.log("Person without organization domain:", person);
-}
-
+      if (personDomain) {
+        const normalizedPersonDomain = getRootDomain(personDomain.toLowerCase());
+        peopleByDomain[normalizedPersonDomain] = peopleByDomain[normalizedPersonDomain] || [];
+        peopleByDomain[normalizedPersonDomain].push(person);
+      } else {
+        console.log("Person without organization domain:", person);
+      }
     });
 
-    const highestRolePersons: { id: string; title: string; domain: string }[] =
-      [];
+    const highestRolePersons: { id: string; first_name: string; last_name: string; organization_id: string; title: string; domain: string }[] = [];
 
     // For each domain, find the person with the highest role
     for (const domain of Object.keys(peopleByDomain)) {
       const people = peopleByDomain[domain];
 
-      // Clean up the result by extracting only 'id' and 'title'
+      // Extract necessary fields
       const cleanedResults = people.map((person: SearchResultPerson) => ({
         id: person.id,
+        first_name: person.first_name,
+        last_name: person.last_name,
         title: person.title,
+        organization_id: person.organization_id,
       }));
 
       console.log(`People for domain ${domain}:`, JSON.stringify(cleanedResults, null, 2));
@@ -195,7 +191,13 @@ if (personDomainRaw) {
       console.log(`Highest role person for domain ${domain}:`, highestRolePerson);
 
       if (highestRolePerson) {
-        highestRolePersons.push({ ...highestRolePerson, domain });
+        // Find the full person details from cleanedResults
+        const personDetails = cleanedResults.find(p => p.id === highestRolePerson.id);
+        if (personDetails) {
+          highestRolePersons.push({ ...personDetails, domain });
+        } else {
+          console.log(`Person details not found for id ${highestRolePerson.id}`);
+        }
       } else {
         console.log(
           `Highest role person could not be determined for domain ${domain}.`
@@ -213,150 +215,149 @@ if (personDomainRaw) {
 }
 
 async function enrichHighestRolePersons(
-  highestRolePersons: { id: string; title: string; companyIndex: number }[],
+  highestRolePersons: {
+    id: string;
+    first_name: string;
+    last_name: string;
+    organization_id: string;
+    title: string;
+    domain: string;
+    companyIndex: number;
+  }[],
   savedData: any[]
 ) {
-  console.log("enrichHighestRolePersons called with highestRolePersons:", highestRolePersons);
+  console.log(
+    'enrichHighestRolePersons called with highestRolePersons:',
+    highestRolePersons
+  );
 
   if (highestRolePersons.length === 0) {
-    console.log("No highest role persons to enrich.");
+    console.log('No highest role persons to enrich.');
     return;
   }
 
-  const enrichmentData = {
-    reveal_personal_emails: true,
-    reveal_phone_number: false,
-    details: highestRolePersons.map((person) => ({ id: person.id })),
-  };
+  const endpoint =
+    'https://apolloscraper-54137747006.us-central1.run.app/get_email';
 
-  const enrichmentUrl = "https://api.apollo.io/api/v1/people/bulk_match";
+  const maxConcurrency = 50;
+  const delayBetweenFirst10 = 5000; // 5 seconds
+  const delayAfter10 = 1000; // 1 second
 
-  const headers = {
-    "Cache-Control": "no-cache",
-    "Content-Type": "application/json",
-    "X-Api-Key": process.env.APOLLO_BULK_MATCH_API_KEY || "",
-  };
+  let runningTasks = 0;
+  const tasks: Promise<void>[] = [];
 
-  try {
-    console.log(
-      "Starting bulk enrichment for persons:",
-      highestRolePersons
-    );
-    console.log(
-      "Enrichment data payload being sent:",
-      JSON.stringify(enrichmentData, null, 2)
-    );
+  for (let i = 0; i < highestRolePersons.length; i++) {
+    const person = highestRolePersons[i];
 
-    const enrichmentResponse = await fetch(enrichmentUrl, {
-      method: "POST",
-      headers: headers,
-      body: JSON.stringify(enrichmentData),
-    });
-
-    if (!enrichmentResponse.ok) {
-      const errorText = await enrichmentResponse.text();
-      console.error(
-        `HTTP error during enrichment! Status: ${enrichmentResponse.status} ${errorText}`
-      );
-      throw new Error(`HTTP error! status: ${enrichmentResponse.status}`);
+    // Wait until runningTasks is less than maxConcurrency
+    while (runningTasks >= maxConcurrency) {
+      await delayPromise(1000); // Wait 1 second before checking again
     }
 
-    const enrichmentResult: EnrichmentResult = await enrichmentResponse.json();
+    // Start the task
+    const task = (async () => {
+      runningTasks++;
+      try {
+        // Construct the payload
+        const payload = {
+          first_name: person.first_name,
+          last_name: person.last_name,
+          organization_id: person.organization_id,
+        };
 
-    // Log the enrichment results with only important fields
-    console.log("Bulk Enrichment Results:");
+        const headers = {
+          'Content-Type': 'application/json',
+        };
 
-    enrichmentResult.matches.forEach((match) => {
-      const importantInfo = {
-        first_name: match.first_name,
-        last_name: match.last_name,
-        title: match.title,
-        headline: match.headline,
-        email: match.email,
-        organization_name: match.organization?.name || "",
-      };
-      console.log(importantInfo);
-    });
+        try {
+          const response = await axios.post(endpoint, payload, {
+            headers,
+            timeout: 300000,
+          });
 
-    // Map enriched matches by ID for easy lookup
-    const enrichedMatchesMap: { [id: string]: EnrichmentMatch } = {};
-    enrichmentResult.matches.forEach((match) => {
-      enrichedMatchesMap[match.id] = match;
-    });
+          if (response.status === 200 && response.data.email) {
+            const email = response.data.email;
 
-
-    // Update the corresponding companies in savedData
-    highestRolePersons.forEach((person) => {
-      const enrichedMatch = enrichedMatchesMap[person.id];
-      if (enrichedMatch) {
-        const company = savedData[person.companyIndex];
-        if (!company) {
-          console.error(
-            `Company at index ${person.companyIndex} is undefined`
-          );
-          return; // or continue to the next iteration
-        }
-        company.first_name = enrichedMatch.first_name || "";
-        company.last_name = enrichedMatch.last_name || "";
-        company.company_personal_email = enrichedMatch.email || "";
-        company.title = enrichedMatch.title || person.title;
-        company.linkedin_url = enrichedMatch.linkedin_url || "";
-        console.log(
-          `Updated company at index ${person.companyIndex} with contact details:`,
-          {
-            first_name: company.first_name,
-            last_name: company.last_name,
-            company_personal_email: company.company_personal_email,
-            title: company.title,
-            linkedin_url: company.linkedin_url,
+            // Update the corresponding company in savedData
+            const company = savedData[person.companyIndex];
+            if (!company) {
+              console.error(
+                `Company at index ${person.companyIndex} is undefined`
+              );
+              return;
+            }
+            company.first_name = person.first_name || '';
+            company.last_name = person.last_name || '';
+            company.company_personal_email = email || '';
+            company.title = person.title || '';
+            console.log(
+              `Updated company at index ${person.companyIndex} with contact details:`,
+              {
+                first_name: company.first_name,
+                last_name: company.last_name,
+                company_personal_email: company.company_personal_email,
+                title: company.title,
+              }
+            );
+          } else {
+            console.log(`No email found for person ID ${person.id}`);
           }
-        );
-      } else {
-        console.log(`Enriched data for person ID ${person.id} not found.`);
+        } catch (error) {
+          console.error(
+            `Error fetching email for person ID ${person.id}`,
+            error
+          );
+        }
+      } finally {
+        runningTasks--;
       }
-    });
-  } catch (error) {
-    console.error("Error during bulk enrichment:", error);
+    })();
+
+    tasks.push(task);
+
+    // Implement the delays
+    if (i < 9) {
+      // For the first 10 requests, delay 5 seconds between starting each task
+      await delayPromise(delayBetweenFirst10);
+    } else {
+      // After the first 10 requests, delay 1 second between starting each task
+      await delayPromise(delayAfter10);
+    }
   }
+
+  // Wait for all tasks to complete
+  await Promise.all(tasks);
 }
 
+function delayPromise(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function extractSuburbOrCity(locationInput: string): string {
   // Regular expressions to match Australian states and territories
-  const stateRegex = /\b(New South Wales|NSW|Victoria|VIC|Queensland|QLD|South Australia|SA|Western Australia|WA|Tasmania|TAS|Northern Territory|NT|Australian Capital Territory|ACT)\b/i;
-  const stateRegexGlobal = /\b(New South Wales|NSW|Victoria|VIC|Queensland|QLD|South Australia|SA|Western Australia|WA|Tasmania|TAS|Northern Territory|NT|Australian Capital Territory|ACT)\b/gi;
+  const stateRegex = /\b(New South Wales|NSW|Victoria|VIC|Queensland|QLD|South Australia|SA|Western Australia|WA|Tasmania|TAS|Northern Territory|NT|Australian Capital Territory|ACT)\b/gi;
 
-  // Check if the input is a state
-  const isStateOnly = locationInput.trim().match(stateRegexGlobal)?.length === 1 &&
-    locationInput.trim().replace(stateRegexGlobal, "").trim() === "";
+  // Remove 'Australia' from the input
+  let cleanedInput = locationInput.replace(/\bAustralia\b/i, '').trim();
 
-  if (isStateOnly) {
-    throw new Error("Please provide a specific suburb or city, not just a state.");
+  // Now, extract the state abbreviation
+  let stateMatch = cleanedInput.match(stateRegex);
+  let stateAbbreviation = stateMatch ? stateMatch[0] : '';
+
+  // Remove the state from the cleanedInput to get the suburb or city
+  let suburbOrCity = cleanedInput.replace(stateRegex, '').replace(/,/g, '').trim();
+
+  if (!suburbOrCity) {
+    throw new Error("Unable to extract a valid suburb or city from the input.");
   }
 
-  // Split the address into components
-  const addressComponents = locationInput.split(",");
-
-  // Iterate from the end to the beginning
-  for (let i = addressComponents.length - 1; i >= 0; i--) {
-    let component = addressComponents[i].trim();
-
-    // Skip if component is country or postcode
-    if (component.toLowerCase() === "australia" || /^\d{4}$/.test(component)) {
-      continue;
-    }
-
-    // Remove state abbreviations from the component
-    const cleanedComponent = component.replace(stateRegexGlobal, "").trim();
-
-    // If the cleaned component is not empty, return it
-    if (cleanedComponent) {
-      return cleanedComponent; // Removed ", Australia"
-    }
+  if (stateAbbreviation) {
+    return `${suburbOrCity} ${stateAbbreviation}`;
+  } else {
+    return suburbOrCity;
   }
-
-  throw new Error("Unable to extract a valid suburb or city from the input.");
 }
+
 
 async function scrapeGoogleMaps(
   businessType: string,
@@ -365,7 +366,7 @@ async function scrapeGoogleMaps(
 ): Promise<any[]> {
   const apiKey = process.env.RENDER_API_KEY || ""; // Include your API key if required
 
-  const endpoint = "https://new-map-scraper-54137747006.us-central1.run.app/search";
+  const endpoint = "http://localhost:8080/search";
 
   const requestData = {
     business_type: businessType,
@@ -526,21 +527,49 @@ function sanitizeFilename(name: string): string {
 
 // Function to parse address into components
 function parseAddress(address: string) {
-  const regex = /^(.+?),\s*([^,]+)\s+(\w{2,3})\s+(\d{4}),\s*Australia$/;
-  const match = address.match(regex);
-  if (match) {
-    return {
-      streetAddress: match[1].trim(),
-      suburb: match[2].trim(),
-      postcode: match[4].trim(),
-    };
-  } else {
-    return {
-      streetAddress: "",
-      suburb: "",
-      postcode: "",
-    };
+  // Remove 'Australia' from the end if present
+  address = address.replace(/,\s*Australia$/i, '').trim();
+
+  // Split the address by commas
+  const parts = address.split(',');
+
+  // Initialize variables
+  let streetAddress = '';
+  let suburb = '';
+  let postcode = '';
+
+  if (parts.length >= 1) {
+    streetAddress = parts[0].trim();
   }
+
+  if (parts.length >= 2) {
+    // Extract suburb and possible postcode
+    const suburbPart = parts[1].trim();
+    const postcodeMatch = suburbPart.match(/(\D+)\s+(\d{4})$/);
+
+    if (postcodeMatch) {
+      suburb = postcodeMatch[1].trim();
+      postcode = postcodeMatch[2].trim();
+    } else {
+      suburb = suburbPart;
+    }
+  }
+
+  if (parts.length >= 3 && !postcode) {
+    // If postcode wasn't found earlier, check the third part
+    const postcodePart = parts[2].trim();
+    const postcodeMatch = postcodePart.match(/\d{4}$/);
+
+    if (postcodeMatch) {
+      postcode = postcodeMatch[0];
+    }
+  }
+
+  return {
+    streetAddress,
+    suburb,
+    postcode,
+  };
 }
 
 // Replace your existing generateCSVData function with this
@@ -1188,53 +1217,49 @@ export async function generateLeads(
 
     const highestRolePersons: {
       id: string;
+      first_name: string;
+      last_name: string;
+      organization_id: string;
       title: string;
       domain: string;
       companyIndex: number;
     }[] = [];
-    
+
     let domainsBatch: string[] = [];
     let domainToCompanyIndex: { [domain: string]: number } = {};
-    
+
     for (let index = 0; index < savedData.length; index++) {
       const company: CompanyData = savedData[index];
       console.log(`Processing company at index ${index}:`, company);
-    
+
       if (company.website) {
         const websiteDomain: string = getRootDomain(
           new URL(company.website).hostname.toLowerCase()
         );
-    
+
         if (isDomainExcluded(websiteDomain)) {
           console.log(`Excluded domain ${websiteDomain} from processing.`);
           continue; // Skip this company
         }
-    
+
         domainsBatch.push(websiteDomain);
         domainToCompanyIndex[websiteDomain] = index;
-    
+
         // When we have collected enough domains, process them
         if (domainsBatch.length === 10) {
           console.log("Processing domains batch:", domainsBatch);
           const highestRolePersonsBatch = await getHighestRolePerson(domainsBatch);
-    
+
           console.log("Highest role persons found:", highestRolePersonsBatch);
 
           for (const person of highestRolePersonsBatch) {
             const normalizedDomain = getRootDomain(person.domain.toLowerCase());
             const companyIndex = domainToCompanyIndex[normalizedDomain];
-          
+
             if (companyIndex === undefined) {
               console.error(`Company index not found for domain ${normalizedDomain}`);
             } else {
               highestRolePersons.push({ ...person, companyIndex });
-
-              // When we have collected 10 highest role persons, enrich them
-              if (highestRolePersons.length === 10) {
-                console.log("Enriching highest role persons:", highestRolePersons);
-                await enrichHighestRolePersons(highestRolePersons, savedData);
-                highestRolePersons.length = 0; // Reset the array
-              }
             }
           }
 
@@ -1249,11 +1274,11 @@ export async function generateLeads(
     if (domainsBatch.length > 0) {
       console.log("Processing remaining domains batch:", domainsBatch);
       const highestRolePersonsBatch = await getHighestRolePerson(domainsBatch);
-    
+
       console.log("Highest role persons found:", highestRolePersonsBatch);
 
       for (const person of highestRolePersonsBatch) {
-        const normalizedDomain = person.domain.toLowerCase().replace(/^www\./, "");
+        const normalizedDomain = getRootDomain(person.domain.toLowerCase());
         const companyIndex = domainToCompanyIndex[normalizedDomain];
 
         if (companyIndex === undefined) {
@@ -1262,13 +1287,6 @@ export async function generateLeads(
           );
         } else {
           highestRolePersons.push({ ...person, companyIndex });
-
-          // Enrich when we have 10 records
-          if (highestRolePersons.length === 10) {
-            console.log("Enriching highest role persons:", highestRolePersons);
-            await enrichHighestRolePersons(highestRolePersons, savedData);
-            highestRolePersons.length = 0; // Reset the array
-          }
         }
       }
 
@@ -1277,9 +1295,9 @@ export async function generateLeads(
       domainToCompanyIndex = {};
     }
 
-    // Enrich any remaining highest role persons less than 10
+    // Now, we can proceed to enrich the highest role persons
     if (highestRolePersons.length > 0) {
-      console.log("Enriching remaining highest role persons:", highestRolePersons);
+      console.log("Enriching highest role persons:", highestRolePersons);
       await enrichHighestRolePersons(highestRolePersons, savedData);
     }
 
