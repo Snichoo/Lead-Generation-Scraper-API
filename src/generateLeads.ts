@@ -1,3 +1,7 @@
+import dotenv from 'dotenv';
+
+// Load environment variables from a .env file
+dotenv.config();
 
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
