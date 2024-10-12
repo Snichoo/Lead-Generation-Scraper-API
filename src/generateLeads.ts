@@ -1,3 +1,8 @@
+import dotenv from 'dotenv';
+
+// Load environment variables from a .env file
+dotenv.config();
+
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
@@ -111,7 +116,7 @@ async function getHighestRolePerson(
   console.log("getHighestRolePerson called with domains:", organizationDomains);
 
   const highestRolePersons = [];
-  const newApiEndpoint = 'https://one-peoplescraper-54137747006.us-central1.run.app';
+  const newApiEndpoint = 'https://one-peoplescraper-54137747006.us-central1.run.app/scrape_contacts';
 
   for (const domain of organizationDomains) {
     try {
