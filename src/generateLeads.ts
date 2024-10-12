@@ -97,10 +97,7 @@ interface Contact {
   number_of_employees: string;
 }
 
-async function getHighestRolePerson(
-  organizationDomains: string[],
-  domainToCompanyIndex: { [domain: string]: number }
-): Promise<{
+interface HighestRolePerson {
   id: string;
   first_name: string;
   last_name: string;
@@ -108,102 +105,138 @@ async function getHighestRolePerson(
   title: string;
   domain: string;
   companyIndex: number;
-}[]> {
+}
+
+
+async function getHighestRolePerson(
+  organizationDomains: string[],
+  domainToCompanyIndex: { [domain: string]: number }
+): Promise<HighestRolePerson[]> {
   console.log("getHighestRolePerson called with domains:", organizationDomains);
 
-  const highestRolePersons = [];
-  const newApiEndpoint = 'https://one-peoplescraper-54137747006.us-central1.run.app/scrape_contacts';
+  const highestRolePersons: HighestRolePerson[] = [];
+  const newApiEndpoint =
+    'https://one-peoplescraper-54137747006.us-central1.run.app/scrape_contacts';
 
-  for (const domain of organizationDomains) {
-    try {
-      // Call the new API
-      const response = await axios.post(
-        newApiEndpoint,
-        { domain_name: domain },
-        { timeout: 300000 } // Set a timeout if necessary
-      );
+  const limit = pLimit(50); // Limit concurrency to 50
+  const tasks = [];
 
-      const data = response.data;
-      const organization_id = data.organization_id;
-      const contacts: Contact[] = data.contacts;
+  for (let i = 0; i < organizationDomains.length; i++) {
+    const domain = organizationDomains[i];
 
-      if (!contacts || contacts.length === 0) {
-        console.log(`No contacts found for domain ${domain}`);
-        continue;
-      }
+    // Calculate the delay for each request
+    const delayMs =
+      i === 0
+        ? 0
+        : i < 10
+        ? i * 5000 // First 10 requests: 5 seconds apart
+        : 45000 + (i - 9) * 1000; // Subsequent requests: 1 second apart starting after 45 seconds
 
-      // Get the number_of_employees from the contacts
-      // Assuming all contacts have the same number_of_employees, or take the first one
-      const numEmployeesStr = contacts[0].number_of_employees;
-      const numEmployees = parseInt(numEmployeesStr.replace(/[^\d]/g, ''), 10);
+    const task = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        limit(async () => {
+          try {
+            // Call the new API
+            const response = await axios.post(
+              newApiEndpoint,
+              { domain_name: domain },
+              { timeout: 300000 } // Set a timeout if necessary
+            );
 
-      if (numEmployees > 100) {
-        console.log(`Skipping domain ${domain} because it has ${numEmployees} employees`);
-        continue;
-      }
+            const data = response.data;
+            const organization_id = data.organization_id;
+            const contacts: Contact[] = data.contacts;
 
-      // Prepare cleanedResults for GPT
-      const cleanedResults = contacts.map((contact) => ({
-        id: '', // You can generate an ID if necessary
-        name: contact.name,
-        job_title: contact.job_title,
-      }));
+            if (!contacts || contacts.length === 0) {
+              console.log(`No contacts found for domain ${domain}`);
+              return;
+            }
 
-      // Use GPT to find the person with the highest role
-      const completion = await openai.beta.chat.completions.parse({
-        model: "gpt-4o-2024-08-06",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a helpful assistant that identifies the person with the highest role in a company based on their job title.",
-          },
-          {
-            role: "user",
-            content: `Given the following people and their job titles: ${JSON.stringify(
-              cleanedResults
-            )}. Find the person with the highest role and provide their name and job title.`,
-          },
-        ],
-        response_format: zodResponseFormat(PersonSchema, "highest_role_person"),
-      });
+            // Get the number_of_employees from the contacts
+            const numEmployeesStr = contacts[0].number_of_employees;
+            const numEmployees = parseInt(numEmployeesStr.replace(/[^\d]/g, ''), 10);
 
-      const highestRolePerson: { name: string; job_title: string } | null =
-        completion.choices[0].message.parsed;
+            if (numEmployees > 100) {
+              console.log(
+                `Skipping domain ${domain} because it has ${numEmployees} employees`
+              );
+              return;
+            }
 
-      if (highestRolePerson) {
-        // Find the full person details from contacts
-        const personDetails = contacts.find(
-          (c) =>
-            c.name === highestRolePerson.name &&
-            c.job_title === highestRolePerson.job_title
-        );
+            // Prepare cleanedResults for GPT
+            const cleanedResults = contacts.map((contact) => ({
+              id: '', // You can generate an ID if necessary
+              name: contact.name,
+              job_title: contact.job_title,
+            }));
 
-        if (personDetails) {
-          const companyIndex = domainToCompanyIndex[domain];
+            // Use GPT to find the person with the highest role
+            const completion = await openai.beta.chat.completions.parse({
+              model: 'gpt-4o-2024-08-06',
+              messages: [
+                {
+                  role: 'system',
+                  content:
+                    'You are a helpful assistant that identifies the person with the highest role in a company based on their job title.',
+                },
+                {
+                  role: 'user',
+                  content: `Given the following people and their job titles: ${JSON.stringify(
+                    cleanedResults
+                  )}. Find the person with the highest role and provide their name and job title.`,
+                },
+              ],
+              response_format: zodResponseFormat(PersonSchema, 'highest_role_person'),
+            });
 
-          if (companyIndex === undefined) {
-            console.error(`Company index not found for domain ${domain}`);
-            continue;
+            const highestRolePerson: { name: string; job_title: string } | null =
+              completion.choices[0].message.parsed;
+
+            if (highestRolePerson) {
+              // Find the full person details from contacts
+              const personDetails = contacts.find(
+                (c) =>
+                  c.name === highestRolePerson.name &&
+                  c.job_title === highestRolePerson.job_title
+              );
+
+              if (personDetails) {
+                const companyIndex = domainToCompanyIndex[domain];
+
+                if (companyIndex === undefined) {
+                  console.error(`Company index not found for domain ${domain}`);
+                  return;
+                }
+
+                highestRolePersons.push({
+                  id: '', // Generate or assign an ID if necessary
+                  first_name: personDetails.name.split(' ')[0],
+                  last_name: personDetails.name.split(' ').slice(1).join(' '),
+                  organization_id: organization_id,
+                  title: personDetails.job_title,
+                  domain: domain,
+                  companyIndex: companyIndex,
+                });
+              }
+            } else {
+              console.log(
+                `Highest role person could not be determined for domain ${domain}.`
+              );
+            }
+          } catch (error) {
+            console.error(`Error processing domain ${domain}:`, error);
           }
+        })
+          .then(resolve)
+          .catch(resolve);
+      }, delayMs);
+    });
 
-          highestRolePersons.push({
-            id: '', // Generate or assign an ID if necessary
-            first_name: personDetails.name.split(' ')[0],
-            last_name: personDetails.name.split(' ').slice(1).join(' '),
-            organization_id: organization_id,
-            title: personDetails.job_title,
-            domain: domain,
-            companyIndex: companyIndex,
-          });
-        }
-      } else {
-        console.log(`Highest role person could not be determined for domain ${domain}.`);
-      }
-    } catch (error) {
-      console.error(`Error processing domain ${domain}:`, error);
-    }
+    tasks.push(task);
   }
+
+  // Wait for all tasks to complete
+  await Promise.all(tasks);
 
   return highestRolePersons;
 }
