@@ -1,7 +1,3 @@
-import dotenv from 'dotenv';
-
-// Load environment variables from a .env file
-dotenv.config();
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
@@ -28,6 +24,8 @@ const PersonSchema = z.object({
   job_title: z.string(),
 });
 
+
+
 // Extend the schema to include additional details
 const EnrichedPersonSchema = z.object({
   id: z.string(),
@@ -44,37 +42,34 @@ interface Organization {
   website_url?: string;
 }
 
-interface Contact {
-  name: string;
-  job_title: string;
-  linkedin: string;
-  number_of_employees: string;
-}
-
-interface HighestRolePerson {
+interface SearchResultPerson {
   id: string;
   first_name: string;
   last_name: string;
-  organization_id: string;
   title: string;
-  domain: string;
-  companyIndex: number;
+  organization_id: string;
+  organization: Organization;
 }
 
-interface CompanyData {
+interface SearchResult {
+  people: SearchResultPerson[];
+}
+
+interface EnrichmentMatch {
   id: string;
-  company_name: string;
-  address: string;
-  website?: string;
-  company_phone?: string;
-  company_personal_email?: string;
-  company_general_email?: string;
+  email?: string;
   first_name?: string;
   last_name?: string;
   title?: string;
   linkedin_url?: string;
-  exclude?: boolean; // For marking companies to exclude
-  [key: string]: any; // For additional properties
+  headline?: string;
+  organization?: {
+    name?: string;
+  };
+}
+
+interface EnrichmentResult {
+  matches: EnrichmentMatch[];
 }
 
 // Place 'getRootDomain' function near the top
@@ -93,120 +88,136 @@ function getRootDomain(domain: string): string {
   return domain;
 }
 
-// Function to call the new API and return the highest role persons for multiple domains
+// Define Contact interface
+interface Contact {
+  name: string;
+  job_title: string;
+  linkedin: string | null;
+  number_of_employees: string;
+}
+
 async function getHighestRolePerson(
   organizationDomains: string[],
   domainToCompanyIndex: { [domain: string]: number }
-): Promise<{ highestRolePersons: HighestRolePerson[], domainsToExclude: string[] }> {
+): Promise<{
+  id: string;
+  first_name: string;
+  last_name: string;
+  organization_id: string;
+  title: string;
+  domain: string;
+  companyIndex: number;
+}[]> {
   console.log("getHighestRolePerson called with domains:", organizationDomains);
 
-  const highestRolePersons: HighestRolePerson[] = [];
-  const domainsToExclude: string[] = [];
+  const highestRolePersons = [];
+  const newApiEndpoint = 'https://one-peoplescraper-54137747006.us-central1.run.app';
 
   for (const domain of organizationDomains) {
-    // Call the new API to get contacts
-    const response = await getContactsFromNewAPI(domain);
-
-    if (!response || !response.contacts || response.contacts.length === 0) {
-      console.log(`No contacts found for domain: ${domain}`);
-      continue;
-    }
-
-    // Check number_of_employees (assuming it's consistent across contacts)
-    const number_of_employees_str = response.contacts[0].number_of_employees || '0';
-    const number_of_employees = parseInt(number_of_employees_str.replace(/\D/g, ''), 10);
-
-    if (number_of_employees > 100) {
-      console.log(`Company with domain ${domain} has ${number_of_employees} employees. Excluding.`);
-      domainsToExclude.push(domain);
-      continue;
-    }
-
-    // Prepare data for GPT
-    const contactsData = response.contacts.map(contact => ({
-      name: contact.name,
-      job_title: contact.job_title,
-    }));
-
-    // Use GPT to find the highest role person
-    const completion = await openai.beta.chat.completions.parse({
-      model: "gpt-4o-2024-08-06",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a helpful assistant that identifies the person with the highest role in a company based on their job title.",
-        },
-        {
-          role: "user",
-          content: `Given the following people and their job titles: ${JSON.stringify(
-            contactsData
-          )}. Find the person with the highest role and provide their name and job title.`,
-        },
-      ],
-      response_format: zodResponseFormat(PersonSchema, "highest_role_person"),
-    });
-
-    const highestRolePerson: { name: string; job_title: string } | null =
-      completion.choices[0].message.parsed;
-
-    if (highestRolePerson) {
-      // Find the full person details from contacts
-      const personDetails = response.contacts.find(contact => contact.name === highestRolePerson.name && contact.job_title === highestRolePerson.job_title);
-
-      if (personDetails) {
-        // Split name into first_name and last_name
-        const [first_name, ...last_name_parts] = personDetails.name.split(' ');
-        const last_name = last_name_parts.join(' ');
-
-        highestRolePersons.push({
-          id: '', // ID is not available
-          first_name: first_name || '',
-          last_name: last_name || '',
-          organization_id: response.organization_id,
-          title: personDetails.job_title || '',
-          domain: domain,
-          companyIndex: domainToCompanyIndex[domain],
-        });
-      } else {
-        console.log(`Person details not found for ${highestRolePerson.name}`);
-      }
-    } else {
-      console.log(
-        `Highest role person could not be determined for domain ${domain}.`
+    try {
+      // Call the new API
+      const response = await axios.post(
+        newApiEndpoint,
+        { domain_name: domain },
+        { timeout: 300000 } // Set a timeout if necessary
       );
+
+      const data = response.data;
+      const organization_id = data.organization_id;
+      const contacts: Contact[] = data.contacts;
+
+      if (!contacts || contacts.length === 0) {
+        console.log(`No contacts found for domain ${domain}`);
+        continue;
+      }
+
+      // Get the number_of_employees from the contacts
+      // Assuming all contacts have the same number_of_employees, or take the first one
+      const numEmployeesStr = contacts[0].number_of_employees;
+      const numEmployees = parseInt(numEmployeesStr.replace(/[^\d]/g, ''), 10);
+
+      if (numEmployees > 100) {
+        console.log(`Skipping domain ${domain} because it has ${numEmployees} employees`);
+        continue;
+      }
+
+      // Prepare cleanedResults for GPT
+      const cleanedResults = contacts.map((contact) => ({
+        id: '', // You can generate an ID if necessary
+        name: contact.name,
+        job_title: contact.job_title,
+      }));
+
+      // Use GPT to find the person with the highest role
+      const completion = await openai.beta.chat.completions.parse({
+        model: "gpt-4o-2024-08-06",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a helpful assistant that identifies the person with the highest role in a company based on their job title.",
+          },
+          {
+            role: "user",
+            content: `Given the following people and their job titles: ${JSON.stringify(
+              cleanedResults
+            )}. Find the person with the highest role and provide their name and job title.`,
+          },
+        ],
+        response_format: zodResponseFormat(PersonSchema, "highest_role_person"),
+      });
+
+      const highestRolePerson: { name: string; job_title: string } | null =
+        completion.choices[0].message.parsed;
+
+      if (highestRolePerson) {
+        // Find the full person details from contacts
+        const personDetails = contacts.find(
+          (c) =>
+            c.name === highestRolePerson.name &&
+            c.job_title === highestRolePerson.job_title
+        );
+
+        if (personDetails) {
+          const companyIndex = domainToCompanyIndex[domain];
+
+          if (companyIndex === undefined) {
+            console.error(`Company index not found for domain ${domain}`);
+            continue;
+          }
+
+          highestRolePersons.push({
+            id: '', // Generate or assign an ID if necessary
+            first_name: personDetails.name.split(' ')[0],
+            last_name: personDetails.name.split(' ').slice(1).join(' '),
+            organization_id: organization_id,
+            title: personDetails.job_title,
+            domain: domain,
+            companyIndex: companyIndex,
+          });
+        }
+      } else {
+        console.log(`Highest role person could not be determined for domain ${domain}.`);
+      }
+    } catch (error) {
+      console.error(`Error processing domain ${domain}:`, error);
     }
   }
 
-  console.log("Final highest role persons:", highestRolePersons);
-
-  return { highestRolePersons, domainsToExclude };
-}
-
-// Function to call the new API and get contacts
-async function getContactsFromNewAPI(domain: string): Promise<{ organization_id: string; contacts: Contact[] } | null> {
-  console.log(`Fetching contacts for domain: ${domain}`);
-
-  const apiUrl = process.env.NEW_API_ENDPOINT || "https://one-peoplescraper-54137747006.us-central1.run.app";
-
-  try {
-    const response = await axios.post(apiUrl, { domain_name: domain }, { timeout: 300000 });
-
-    if (response.status !== 200) {
-      console.error(`Error fetching contacts for domain ${domain}: ${response.statusText}`);
-      return null;
-    }
-
-    return response.data;
-  } catch (error) {
-    console.error(`Error calling new API for domain ${domain}:`, error);
-    return null;
-  }
+  return highestRolePersons;
 }
 
 async function enrichHighestRolePersons(
-  highestRolePersons: HighestRolePerson[],
-  savedData: CompanyData[]
+  highestRolePersons: {
+    id: string;
+    first_name: string;
+    last_name: string;
+    organization_id: string;
+    title: string;
+    domain: string;
+    companyIndex: number;
+  }[],
+  savedData: any[]
 ) {
   console.log(
     'enrichHighestRolePersons called with highestRolePersons:',
@@ -282,11 +293,11 @@ async function enrichHighestRolePersons(
               }
             );
           } else {
-            console.log(`No email found for person`);
+            console.log(`No email found for person ID ${person.id}`);
           }
         } catch (error) {
           console.error(
-            `Error fetching email for person ${person.first_name} ${person.last_name}`,
+            `Error fetching email for person ID ${person.id}`,
             error
           );
         }
@@ -339,6 +350,7 @@ function extractSuburbOrCity(locationInput: string): string {
     return suburbOrCity;
   }
 }
+
 
 async function scrapeGoogleMaps(
   businessType: string,
@@ -501,6 +513,7 @@ async function runActorPool(
   return allResults;
 }
 
+
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
 }
@@ -552,6 +565,7 @@ function parseAddress(address: string) {
   };
 }
 
+// Replace your existing generateCSVData function with this
 // Replace your existing generateCSVFile function with this
 async function generateCSVFile(
   businessType: string,
@@ -708,6 +722,8 @@ function extractLinks(html: string, baseUrl: string): string[] {
         }
       } catch (error) {
         // Suppress error logging to prevent terminal clutter
+        // You can enable logging by uncommenting the line below
+        // console.warn(`Invalid URL encountered: ${href} - ${error.message}`);
         // Skip invalid URLs
       }
     }
@@ -860,6 +876,7 @@ async function checkLocation(location: string): Promise<string> {
   }
 }
 
+
 function normalizeCityName(cityName: string): string {
   return cityName
     .toLowerCase()
@@ -893,7 +910,10 @@ const stateByCity: { [key: string]: string } = {
   bunbury: 'WA'
 };
 
-// Excluded domains set
+// At the top of your generateLeads.ts file
+
+// At the top of your generateLeads.ts file
+
 const excludedDomains = new Set<string>([
   'google.com',
   'facebook.com',
@@ -917,6 +937,23 @@ const excludedDomains = new Set<string>([
 function isDomainExcluded(domain: string): boolean {
   return excludedDomains.has(domain);
 }
+
+interface CompanyData {
+  id: string;
+  company_name: string;
+  address: string;
+  website?: string;
+  company_phone?: string;
+  company_personal_email?: string;
+  company_general_email?: string;
+  first_name?: string;
+  last_name?: string;
+  title?: string;
+  linkedin_url?: string;
+  [key: string]: any; // For additional properties
+}
+
+
 
 // Corrected 'generateLeads' function
 export async function generateLeads(
@@ -995,6 +1032,7 @@ export async function generateLeads(
     // Read saved JSON file and assign IDs to each company
     let savedData: CompanyData[] = readJsonFromFile("finalResults.json");
 
+
     // Check if no leads were found after initial scraping
     if (savedData.length === 0) {
       console.log("No leads were found. Try changing locations or business type.");
@@ -1012,8 +1050,8 @@ export async function generateLeads(
     }
 
     // Assign an id to each company
-    for (let i = 0; i < savedData.length; i++) {
-      // Generate an id
+    for (let i = 0; i < savedData.length; i++) {0
+      // Generate an id (not too short)
       savedData[i].id = `company_${i}_${Date.now()}`;
     }
 
@@ -1022,84 +1060,71 @@ export async function generateLeads(
 
     console.log("Saved Data after assigning IDs:", JSON.stringify(savedData, null, 2));
 
-    // Remove code related to Perplexity API
+    // Proceed with the rest of the lead generation process using the filtered savedData
 
-    const highestRolePersons: HighestRolePerson[] = [];
 
+    const highestRolePersons: {
+      id: string;
+      first_name: string;
+      last_name: string;
+      organization_id: string;
+      title: string;
+      domain: string;
+      companyIndex: number;
+    }[] = [];
+    
     let domainsBatch: string[] = [];
     let domainToCompanyIndex: { [domain: string]: number } = {};
-    let companiesToExclude: Set<number> = new Set();
-
+    
     for (let index = 0; index < savedData.length; index++) {
       const company: CompanyData = savedData[index];
       console.log(`Processing company at index ${index}:`, company);
-
+    
       if (company.website) {
         const websiteDomain: string = getRootDomain(
           new URL(company.website).hostname.toLowerCase()
         );
-
+    
         if (isDomainExcluded(websiteDomain)) {
           console.log(`Excluded domain ${websiteDomain} from processing.`);
           continue; // Skip this company
         }
-
+    
         domainsBatch.push(websiteDomain);
         domainToCompanyIndex[websiteDomain] = index;
-
+    
         // When we have collected enough domains, process them
         if (domainsBatch.length === 10) {
           console.log("Processing domains batch:", domainsBatch);
-          const { highestRolePersons: highestRolePersonsBatch, domainsToExclude } = await getHighestRolePerson(domainsBatch, domainToCompanyIndex);
-
+          const highestRolePersonsBatch = await getHighestRolePerson(
+            domainsBatch,
+            domainToCompanyIndex
+          );
+    
           console.log("Highest role persons found:", highestRolePersonsBatch);
-
+    
           highestRolePersons.push(...highestRolePersonsBatch);
-
-          // Mark companies for exclusion
-          for (const domain of domainsToExclude) {
-            const companyIndex = domainToCompanyIndex[domain];
-            if (companyIndex !== undefined) {
-              companiesToExclude.add(companyIndex);
-              console.log(`Marked company at index ${companyIndex} for exclusion`);
-            }
-          }
-
+    
           // Clear the domainsBatch and domainToCompanyIndex
           domainsBatch = [];
           domainToCompanyIndex = {};
         }
       }
     }
-
+    
     // Process any remaining domains
     if (domainsBatch.length > 0) {
       console.log("Processing remaining domains batch:", domainsBatch);
-      const { highestRolePersons: highestRolePersonsBatch, domainsToExclude } = await getHighestRolePerson(domainsBatch, domainToCompanyIndex);
-
+      const highestRolePersonsBatch = await getHighestRolePerson(
+        domainsBatch,
+        domainToCompanyIndex
+      );
+    
       console.log("Highest role persons found:", highestRolePersonsBatch);
-
+    
       highestRolePersons.push(...highestRolePersonsBatch);
-
-      // Mark companies for exclusion
-      for (const domain of domainsToExclude) {
-        const companyIndex = domainToCompanyIndex[domain];
-        if (companyIndex !== undefined) {
-          companiesToExclude.add(companyIndex);
-          console.log(`Marked company at index ${companyIndex} for exclusion`);
-        }
-      }
-
-      // Clear the domainsBatch and domainToCompanyIndex
-      domainsBatch = [];
-      domainToCompanyIndex = {};
     }
-
-    // Remove companies marked for exclusion
-    savedData = savedData.filter((company, index) => !companiesToExclude.has(index));
-
-    // Save the updated savedData back to finalResults.json
-    saveToFile("finalResults.json", savedData);
+    
 
     // Now, we can proceed to enrich the highest role persons
     if (highestRolePersons.length > 0) {
@@ -1107,8 +1132,12 @@ export async function generateLeads(
       await enrichHighestRolePersons(highestRolePersons, savedData);
     }
 
+    // Save the updated savedData back to finalResults.json
+    saveToFile("finalResults.json", savedData);
+
     // --- New Step: Find company emails for companies without email ---
 
+    // Identify companies without both personal and general emails and with website
     // Identify companies without both personal and general emails and with website
     const companiesWithoutEmail = [];
 
@@ -1121,9 +1150,11 @@ export async function generateLeads(
           company.company_general_email.trim() === '') &&
         company.website
       ) {
+        const websiteDomain = new URL(company.website).hostname.replace(/^www\./, '');
         companiesWithoutEmail.push({
           index,
           website: company.website,
+          domain: websiteDomain,
         });
       }
     }
@@ -1206,6 +1237,8 @@ export async function generateLeads(
 
     // Return the filename and file size
     return { filename: csvResult.filename, fileSizeInBytes: csvResult.fileSizeInBytes };
+
+
 
   } catch (error) {
     console.error("Error in the lead generation process:", error);
