@@ -1,3 +1,8 @@
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
@@ -10,6 +15,7 @@ import { createObjectCsvStringifier } from 'csv-writer';
 import { format } from 'date-fns';
 import { suburbsByCity } from "./suburbs.js";
 import Bottleneck from 'bottleneck';
+import { ApifyClient } from 'apify-client';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -23,8 +29,6 @@ const PersonSchema = z.object({
   name: z.string(),
   job_title: z.string(),
 });
-
-
 
 // Extend the schema to include additional details
 const EnrichedPersonSchema = z.object({
@@ -100,299 +104,49 @@ interface HighestRolePerson {
   id: string;
   first_name: string;
   last_name: string;
-  organization_id: string;
+  email: string;
   title: string;
+  linkedin_url: string;
   domain: string;
   companyIndex: number;
 }
 
-async function getHighestRolePerson(
-  organizationDomains: string[],
-  domainToCompanyIndex: { [domain: string]: number }
-): Promise<HighestRolePerson[]> {
-  console.log("getHighestRolePerson called with domains:", organizationDomains);
+async function getContactsFromApify(domains: string[]): Promise<{ [domain: string]: any[] }> {
+  const contactsByDomain: { [domain: string]: any[] } = {};
+  const client = new ApifyClient({
+    token: process.env.APIFY_API_TOKEN,
+  });
 
-  const highestRolePersons: HighestRolePerson[] = [];
-  const newApiEndpoint = 'https://one-peoplescraper-54137747006.us-central1.run.app/scrape_contacts';
+  const actorId = 'jljBwyyQakqrL1wae';
 
-  const maxConcurrent = 50;
-  let currentConcurrent = 0;
-  let domainIndex = 0;
+  const maxConcurrent = 5; // Adjust concurrency as appropriate
+  const limit = pLimit(maxConcurrent);
 
-  return new Promise<HighestRolePerson[]>((resolve, reject) => {
-    function startRequest() {
-      if (domainIndex >= organizationDomains.length) {
-        if (currentConcurrent === 0) {
-          resolve(highestRolePersons);
-        }
-        return;
-      }
-
-      if (currentConcurrent >= maxConcurrent) {
-        return;
-      }
-
-      const domain = organizationDomains[domainIndex];
-      domainIndex++;
-
-      currentConcurrent++;
-
-      (async () => {
-        try {
-          const response = await axios.post(
-            newApiEndpoint,
-            { domain_name: domain }
-          );
-
-          const data = response.data;
-
-
-          // Continue processing the data
-          const organization_id = data.organization_id;
-          const contacts: Contact[] = data.contacts;
-
-          if (!contacts || contacts.length === 0) {
-            console.log(`No contacts found for domain ${domain}`);
-          } else {
-            // Prepare cleanedResults for GPT
-            const cleanedResults = contacts.map((contact) => ({
-              id: '', // You can generate an ID if necessary
-              name: contact.name,
-              job_title: contact.job_title,
-            }));
-
-            // Use GPT to find the person with the highest role
-            const completion = await openai.beta.chat.completions.parse({
-              model: 'gpt-4o-mini-2024-07-18',
-              messages: [
-                {
-                  role: 'system',
-                  content:
-                    'You are a helpful assistant that identifies the person with the highest role in a company based on their job title.',
-                },
-                {
-                  role: 'user',
-                  content: `Given the following people and their job titles: ${JSON.stringify(
-                    cleanedResults
-                  )}. Find the person with the highest role and provide their name and job title.`,
-                },
-              ],
-              response_format: zodResponseFormat(PersonSchema, 'highest_role_person'),
-            });
-
-            const highestRolePerson = completion.choices[0].message.parsed;
-
-            if (highestRolePerson) {
-              // Find the full person details from contacts
-              const personDetails = contacts.find(
-                (c) =>
-                  c.name === highestRolePerson.name &&
-                  c.job_title === highestRolePerson.job_title
-              );
-
-              if (personDetails) {
-                const companyIndex = domainToCompanyIndex[domain];
-
-                if (companyIndex === undefined) {
-                  console.error(`Company index not found for domain ${domain}`);
-                } else {
-                  highestRolePersons.push({
-                    id: '', // Generate or assign an ID if necessary
-                    first_name: personDetails.name.split(' ')[0],
-                    last_name: personDetails.name.split(' ').slice(1).join(' '),
-                    organization_id: organization_id,
-                    title: personDetails.job_title,
-                    domain: domain,
-                    companyIndex: companyIndex,
-                  });
-                }
-              }
-            } else {
-              console.log(
-                `Highest role person could not be determined for domain ${domain}.`
-              );
-            }
-          }
-        } catch (error) {
-          console.error(`Error processing domain ${domain}:`, error);
-        } finally {
-          currentConcurrent--;
-          startRequest();
-          if (domainIndex >= organizationDomains.length && currentConcurrent === 0) {
-            resolve(highestRolePersons);
-          }
-        }
-      })();
-    }
-
-    // Schedule initial requests with the required delays
-    let totalDelay = 0;
-
-    const scheduleNext = () => {
-      if (domainIndex >= organizationDomains.length) {
-        return;
-      }
-
-      if (currentConcurrent >= maxConcurrent) {
-        // Wait for slots to free up
-        return;
-      }
-
-      // Determine the delay
-      let delayMs = 0;
-      if (domainIndex < 10) {
-        delayMs = 5000; // 5 seconds between first 10 requests
-      } else {
-        delayMs = 1000; // 1 second between subsequent requests
-      }
-
-      totalDelay += delayMs;
-
-      setTimeout(() => {
-        startRequest();
-        scheduleNext();
-      }, delayMs);
+  const tasks = domains.map(domain => limit(async () => {
+    const url = `https://app.apollo.io/#/people?sortAscending=false&sortByField=%5Bnone%5D&page=1&qKeywords=${encodeURIComponent(domain)}`;
+    const input = {
+      url: url,
+      totalRecords: 50,
+      getWorkEmails: true,
+      getPersonalEmails: true,
     };
 
-    // Start scheduling requests
-    scheduleNext();
-  });
-}
+    try {
+      const run = await client.actor(actorId).call(input);
 
-
-
-async function enrichHighestRolePersons(
-  highestRolePersons: HighestRolePerson[],
-  savedData: any[]
-) {
-  console.log(
-    'enrichHighestRolePersons called with highestRolePersons:',
-    highestRolePersons
-  );
-
-  if (highestRolePersons.length === 0) {
-    console.log('No highest role persons to enrich.');
-    return;
-  }
-
-  const endpoint = 'https://apolloscraper-54137747006.us-central1.run.app/get_email';
-
-  const maxConcurrent = 50;
-  let currentConcurrent = 0;
-  let personIdx = 0;
-
-  return new Promise<void>((resolve, reject) => {
-    function startRequest() {
-      if (personIdx >= highestRolePersons.length) {
-        if (currentConcurrent === 0) {
-          resolve();
-        }
-        return;
-      }
-
-      if (currentConcurrent >= maxConcurrent) {
-        return;
-      }
-
-      const person = highestRolePersons[personIdx];
-      personIdx++;
-
-      currentConcurrent++;
-
-      (async () => {
-        try {
-          const payload = {
-            first_name: person.first_name,
-            last_name: person.last_name,
-            organization_id: person.organization_id,
-          };
-
-          const headers = {
-            'Content-Type': 'application/json',
-          };
-
-          const response = await axios.post(endpoint, payload, {
-            headers,
-            timeout: 600000,
-          });
-
-          // Continue processing the response
-          if (response.status === 200 && response.data.email) {
-            const email = response.data.email;
-
-            // Update the corresponding company in savedData
-            const company = savedData[person.companyIndex];
-            if (!company) {
-              console.error(
-                `Company at index ${person.companyIndex} is undefined`
-              );
-            } else {
-              company.first_name = person.first_name || '';
-              company.last_name = person.last_name || '';
-              company.company_personal_email = email || '';
-              company.title = person.title || '';
-              console.log(
-                `Updated company at index ${person.companyIndex} with contact details:`,
-                {
-                  first_name: company.first_name,
-                  last_name: company.last_name,
-                  company_personal_email: company.company_personal_email,
-                  title: company.title,
-                }
-              );
-            }
-          } else {
-            console.log(`No email found for person ID ${person.id}`);
-          }
-        } catch (error) {
-          console.error(
-            `Error fetching email for person ID ${person.id}`,
-            error
-          );
-        } finally {
-          currentConcurrent--;
-          startRequest();
-          if (personIdx >= highestRolePersons.length && currentConcurrent === 0) {
-            resolve();
-          }
-        }
-      })();
+      // Fetch and print Actor results from the run's dataset (if any)
+      const { items } = await client.dataset(run.defaultDatasetId).listItems();
+      contactsByDomain[domain] = items;
+    } catch (error) {
+      console.error(`Error processing domain ${domain}:`, error);
+      contactsByDomain[domain] = [];
     }
+  }));
 
-    // Schedule initial requests with the required delays
-    let totalDelay = 0;
+  await Promise.all(tasks);
 
-    const scheduleNext = () => {
-      if (personIdx >= highestRolePersons.length) {
-        return;
-      }
-
-      if (currentConcurrent >= maxConcurrent) {
-        // Wait for slots to free up
-        return;
-      }
-
-      // Determine the delay
-      let delayMs = 0;
-      if (personIdx < 10) {
-        delayMs = 5000; // 5 seconds between first 10 requests
-      } else {
-        delayMs = 1000; // 1 second between subsequent requests
-      }
-
-      totalDelay += delayMs;
-
-      setTimeout(() => {
-        startRequest();
-        scheduleNext();
-      }, delayMs);
-    };
-
-    // Start scheduling requests
-    scheduleNext();
-  });
+  return contactsByDomain;
 }
-
 
 function delayPromise(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -423,7 +177,6 @@ function extractSuburbOrCity(locationInput: string): string {
   }
 }
 
-
 async function scrapeGoogleMaps(
   businessType: string,
   location: string,
@@ -445,7 +198,7 @@ async function scrapeGoogleMaps(
   };
 
   try {
-    const response = await axios.post(endpoint, requestData, { headers, timeout: 300000 }); 
+    const response = await axios.post(endpoint, requestData, { headers, timeout: 300000 });
 
     if (response.status !== 200) {
       throw new Error(`Error fetching data: ${response.statusText}`);
@@ -585,7 +338,6 @@ async function runActorPool(
   return allResults;
 }
 
-
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
 }
@@ -637,7 +389,6 @@ function parseAddress(address: string) {
   };
 }
 
-// Replace your existing generateCSVData function with this
 // Replace your existing generateCSVFile function with this
 async function generateCSVFile(
   businessType: string,
@@ -734,221 +485,6 @@ async function generateCSVFile(
   return { filename, fileSizeInBytes }; // Return the filename and file size
 }
 
-// Function to extract emails from text
-function extractEmails(text: string): string[] {
-  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/gi;
-  let emails: string[] = text.match(emailRegex) || [];
-
-  // Blacklist certain file extensions to filter out false positives
-  const blacklistedExtensions = [
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".svg",
-    ".gif",
-    ".tga",
-    ".bmp",
-    ".zip",
-    ".pdf",
-    ".webp",
-  ];
-
-  emails = emails.filter((email) => {
-    // Convert email and extensions to lowercase for case-insensitive comparison
-    const lowerEmail = email.toLowerCase();
-    return !blacklistedExtensions.some((ext) => lowerEmail.endsWith(ext));
-  });
-
-  return emails;
-}
-
-// Function to extract links from HTML
-function extractLinks(html: string, baseUrl: string): string[] {
-  const $ = cheerio.load(html);
-  const links: string[] = [];
-  $("a[href]").each((i, elem) => {
-    let href = $(elem).attr("href");
-    if (href) {
-      // Remove URL fragments
-      href = href.split("#")[0];
-      // Trim whitespace
-      href = href.trim();
-      // Skip mailto, javascript links, empty or invalid hrefs
-      if (
-        href.startsWith("mailto:") ||
-        href.startsWith("javascript:") ||
-        href === "" ||
-        href === "/" ||
-        href === "https://" ||
-        href === "http://" ||
-        href === "//"
-      ) {
-        return;
-      }
-      // Resolve relative URLs
-      try {
-        const resolvedUrl = new URL(href, baseUrl).toString();
-        // Ensure the link is on the same domain
-        if (resolvedUrl.startsWith(baseUrl)) {
-          links.push(resolvedUrl);
-        }
-      } catch (error) {
-        // Suppress error logging to prevent terminal clutter
-        // You can enable logging by uncommenting the line below
-        // console.warn(`Invalid URL encountered: ${href} - ${error.message}`);
-        // Skip invalid URLs
-      }
-    }
-  });
-  return links;
-}
-
-// Function to fetch a page's HTML content
-async function fetchPage(pageUrl: string): Promise<string | null> {
-  try {
-    const response = await axios.get(pageUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; EmailScraper/1.0)",
-      },
-      timeout: 10000,
-      responseType: 'text', // Add this line
-    });
-    return response.data;
-  } catch (error) {
-    // Handle errors silently
-    return null;
-  }
-}
-
-// Function to crawl a website and find emails
-async function crawlWebsite(startUrl: string): Promise<string[]> {
-  const emailsFound = new Set<string>();
-  const visited = new Set<string>();
-  const queue: string[] = [];
-
-  const maxPages = 40;
-  let pagesCrawled = 0;
-  let emailFound = false;
-
-  const parsedUrl = new URL(startUrl);
-  const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
-
-  // Start with the main page
-  queue.push(startUrl);
-
-  // Prepare potential contact page URLs
-  const contactPaths = [
-    "/contact",
-    "/contact-us",
-    "/contactus",
-    "/about",
-    "/about-us",
-    "/aboutus",
-    "/impressum",
-  ];
-  for (let path of contactPaths) {
-    queue.push(new URL(path, baseUrl).toString());
-  }
-
-  const maxCrawlTime = 30000; // 30 seconds per website
-  const crawlStartTime = Date.now();
-  while (queue.length > 0 && pagesCrawled < maxPages && !emailFound) {
-    if (Date.now() - crawlStartTime > maxCrawlTime) {
-      console.log(`Crawl time exceeded for ${startUrl}`);
-      break;
-    }
-    const currentUrl = queue.shift();
-
-    if (!currentUrl) continue;
-
-    if (visited.has(currentUrl)) {
-      continue;
-    }
-    visited.add(currentUrl);
-
-    const html = await fetchPage(currentUrl);
-    if (!html) {
-      continue;
-    }
-    pagesCrawled++;
-
-    // Extract emails from page
-    const emails = extractEmails(html);
-    if (emails.length > 0) {
-      emails.forEach((email) => emailsFound.add(email));
-      emailFound = true;
-      break; // Stop crawling this website
-    }
-
-    // Extract links from page
-    const links = extractLinks(html, baseUrl);
-    for (let link of links) {
-      if (!visited.has(link)) {
-        queue.push(link);
-      }
-    }
-  }
-
-  return Array.from(emailsFound);
-}
-
-async function checkLocation(location: string): Promise<string> {
-  console.log(`Location to check: ${location}`);
-
-  const broadLocations = [
-    "sydney",
-    "melbourne",
-    "brisbane",
-    "perth",
-    "adelaide",
-    "gold coast",
-    "newcastle",
-    "canberra",
-    "wollongong",
-    "geelong",
-    "hobart",
-    "townsville",
-    "cairns",
-    "toowoomba",
-    "darwin",
-    "ballarat",
-    "bendigo",
-    "albury–wodonga",
-    "launceston",
-    "mackay",
-    "rockhampton",
-    "bunbury",
-  ];
-
-  try {
-    // Normalize location
-    let normalizedLocation = location.toLowerCase();
-
-    // Remove 'Australia' and state abbreviations from the location
-    normalizedLocation = normalizedLocation.replace(
-      /\b(australia|nsw|vic|qld|sa|wa|tas|nt|act)\b/gi,
-      ''
-    );
-
-    // Remove any punctuation
-    normalizedLocation = normalizedLocation.replace(/[^\w\s-]/gi, '');
-
-    // Trim whitespace
-    normalizedLocation = normalizedLocation.trim();
-
-    // Check if normalized location matches any of the broad locations
-    if (broadLocations.includes(normalizedLocation)) {
-      return 'yes';
-    } else {
-      return 'no';
-    }
-  } catch (error) {
-    console.error("Error during location check:", error);
-    return 'no'; // Default to 'no' in case of error
-  }
-}
-
-
 function normalizeCityName(cityName: string): string {
   return cityName
     .toLowerCase()
@@ -983,9 +519,6 @@ const stateByCity: { [key: string]: string } = {
 };
 
 // At the top of your generateLeads.ts file
-
-// At the top of your generateLeads.ts file
-
 const excludedDomains = new Set<string>([
   'google.com',
   'facebook.com',
@@ -1024,13 +557,6 @@ interface CompanyData {
   linkedin_url?: string;
   [key: string]: any; // For additional properties
 }
-
-interface CompanyWithoutEmail {
-  index: number;
-  website: string;
-  domain: string;
-}
-
 
 // Corrected 'generateLeads' function
 export async function generateLeads(
@@ -1162,21 +688,106 @@ export async function generateLeads(
     }
 
     if (organizationDomains.length > 0) {
-      console.log("Processing domains:", organizationDomains);
-      const highestRolePersonsFound = await getHighestRolePerson(
-        organizationDomains,
-        domainToCompanyIndex
-      );
+      console.log("Processing domains with Apify:", organizationDomains);
+      const contactsByDomain = await getContactsFromApify(organizationDomains);
+
+      // For each domain's contacts, feed into GPT to find the highest role person
+      const highestRolePersonsFound: HighestRolePerson[] = [];
+
+      for (const domain of organizationDomains) {
+        const contacts = contactsByDomain[domain];
+
+        if (!contacts || contacts.length === 0) {
+          console.log(`No contacts found for domain ${domain}`);
+          continue;
+        }
+
+        // Prepare cleanedResults for GPT
+        const cleanedResults = contacts.map((contact) => ({
+          id: contact.id || '',
+          name: `${contact.first_name || ''} ${contact.last_name || ''}`.trim(),
+          job_title: contact.title,
+        }));
+
+        // Use GPT to find the person with the highest role
+        const completion = await openai.beta.chat.completions.parse({
+          model: 'gpt-4o-mini-2024-07-18',
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You are a helpful assistant that identifies the person with the highest role in a company based on their job title.',
+            },
+            {
+              role: 'user',
+              content: `Given the following people and their job titles: ${JSON.stringify(
+                cleanedResults
+              )}. Find the person with the highest role and provide their name and job title.`,
+            },
+          ],
+          response_format: zodResponseFormat(PersonSchema, 'highest_role_person'),
+        });
+
+        const highestRolePerson = completion.choices[0].message.parsed;
+
+        if (highestRolePerson) {
+          // Find the full person details from contacts
+          const personDetails = contacts.find(
+            (c) =>
+              `${c.first_name || ''} ${c.last_name || ''}`.trim() === highestRolePerson.name &&
+              c.title === highestRolePerson.job_title
+          );
+
+          if (personDetails) {
+            const companyIndex = domainToCompanyIndex[domain];
+
+            if (companyIndex === undefined) {
+              console.error(`Company index not found for domain ${domain}`);
+            } else {
+              highestRolePersonsFound.push({
+                id: personDetails.id || '',
+                first_name: personDetails.first_name || '',
+                last_name: personDetails.last_name || '',
+                email: personDetails.email || '',
+                title: personDetails.title || '',
+                linkedin_url: personDetails.linkedin_url || '',
+                domain: domain,
+                companyIndex: companyIndex,
+              });
+            }
+          }
+        } else {
+          console.log(
+            `Highest role person could not be determined for domain ${domain}.`
+          );
+        }
+      }
 
       console.log("Highest role persons found:", highestRolePersonsFound);
 
-      highestRolePersons.push(...highestRolePersonsFound);
-    }
-
-    // Now, we can proceed to enrich the highest role persons
-    if (highestRolePersons.length > 0) {
-      console.log("Enriching highest role persons:", highestRolePersons);
-      await enrichHighestRolePersons(highestRolePersons, savedData);
+      // Now, update savedData with highest role persons and their emails
+      for (const person of highestRolePersonsFound) {
+        const company = savedData[person.companyIndex];
+        if (!company) {
+          console.error(`Company at index ${person.companyIndex} is undefined`);
+        } else {
+          company.first_name = person.first_name || '';
+          company.last_name = person.last_name || '';
+          company.company_personal_email = person.email || '';
+          company.title = person.title || '';
+          company.linkedin_url = person.linkedin_url || '';
+          console.log(
+            `Updated company at index ${person.companyIndex} with contact details:`,
+            {
+              first_name: company.first_name,
+              last_name: company.last_name,
+              company_personal_email: company.company_personal_email,
+              title: company.title,
+              linkedin_url: company.linkedin_url,
+            }
+          );
+        }
+      }
     }
 
     // Save the updated savedData back to finalResults.json
@@ -1247,7 +858,7 @@ export async function generateLeads(
             try {
               // Make API call to the email scraper service
               const response = await axios.post(
-                'https://emailscraperservice-54137747006.us-central1.run.app',
+                'https://emailscraperservice-54137747006.us-central1.run.app/search',
                 {
                   website: company.website,
                 }
@@ -1343,5 +954,62 @@ export async function generateLeads(
   } catch (error) {
     console.error("Error in the lead generation process:", error);
     return { error: "Lead generation failed" };
+  }
+}
+
+// Function to check if the location is a broad location
+async function checkLocation(location: string): Promise<string> {
+  console.log(`Location to check: ${location}`);
+
+  const broadLocations = [
+    "sydney",
+    "melbourne",
+    "brisbane",
+    "perth",
+    "adelaide",
+    "gold coast",
+    "newcastle",
+    "canberra",
+    "wollongong",
+    "geelong",
+    "hobart",
+    "townsville",
+    "cairns",
+    "toowoomba",
+    "darwin",
+    "ballarat",
+    "bendigo",
+    "albury–wodonga",
+    "launceston",
+    "mackay",
+    "rockhampton",
+    "bunbury",
+  ];
+
+  try {
+    // Normalize location
+    let normalizedLocation = location.toLowerCase();
+
+    // Remove 'Australia' and state abbreviations from the location
+    normalizedLocation = normalizedLocation.replace(
+      /\b(australia|nsw|vic|qld|sa|wa|tas|nt|act)\b/gi,
+      ''
+    );
+
+    // Remove any punctuation
+    normalizedLocation = normalizedLocation.replace(/[^\w\s-]/gi, '');
+
+    // Trim whitespace
+    normalizedLocation = normalizedLocation.trim();
+
+    // Check if normalized location matches any of the broad locations
+    if (broadLocations.includes(normalizedLocation)) {
+      return 'yes';
+    } else {
+      return 'no';
+    }
+  } catch (error) {
+    console.error("Error during location check:", error);
+    return 'no'; // Default to 'no' in case of error
   }
 }
