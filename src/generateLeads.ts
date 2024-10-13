@@ -113,7 +113,7 @@ async function getHighestRolePerson(
   console.log("getHighestRolePerson called with domains:", organizationDomains);
 
   const highestRolePersons: HighestRolePerson[] = [];
-  const newApiEndpoint = 'http://127.0.0.1:8080/scrape_contacts';
+  const newApiEndpoint = 'https://one-peoplescraper-54137747006.us-central1.run.app/scrape_contacts';
 
   const maxConcurrent = 50;
   let currentConcurrent = 0;
@@ -275,7 +275,7 @@ async function enrichHighestRolePersons(
     return;
   }
 
-  const endpoint = 'http://127.0.0.1:7070/get_email';
+  const endpoint = 'https://apolloscraper-54137747006.us-central1.run.app/get_email';
 
   const maxConcurrent = 50;
   let currentConcurrent = 0;
