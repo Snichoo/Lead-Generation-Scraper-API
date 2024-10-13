@@ -1,0 +1,17 @@
+{
+  "contacts": [
+    {
+      "job_title": "Founder",
+      "linkedin": "http://www.linkedin.com/in/link2vala",
+      "name": "Vala Setareh",
+      "number_of_employees": "2"
+    },
+    {
+      "job_title": "Legal Intern",
+      "linkedin": "http://www.linkedin.com/in/shivam-rishi-a86847141",
+      "name": "Shivam Rishi",
+      "number_of_employees": "2"
+    }
+  ],
+  "organization_id": "5ed37741e9a83100011c07f1"
+}
