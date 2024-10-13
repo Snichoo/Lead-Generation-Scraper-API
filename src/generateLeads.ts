@@ -853,7 +853,7 @@ export async function generateLeads(
             try {
               // Make API call to the email scraper service
               const response = await axios.post(
-                'https://emailscraperservice-54137747006.us-central1.run.app/search',
+                'https://emailscraperservice-54137747006.us-central1.run.app/scrape-emails',
                 {
                   website: company.website,
                 }
