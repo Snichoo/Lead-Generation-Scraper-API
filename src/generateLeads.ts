@@ -1,4 +1,3 @@
-
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
@@ -107,7 +106,6 @@ interface HighestRolePerson {
   companyIndex: number;
 }
 
-
 async function getHighestRolePerson(
   organizationDomains: string[],
   domainToCompanyIndex: { [domain: string]: number }
@@ -115,54 +113,52 @@ async function getHighestRolePerson(
   console.log("getHighestRolePerson called with domains:", organizationDomains);
 
   const highestRolePersons: HighestRolePerson[] = [];
-  const newApiEndpoint =
-    'https://one-peoplescraper-54137747006.us-central1.run.app/scrape_contacts';
+  const newApiEndpoint = 'https://one-peoplescraper-54137747006.us-central1.run.app/scrape_contacts';
 
-  const limit = pLimit(50); // Limit concurrency to 50
-  const tasks = [];
+  const maxConcurrent = 50;
+  let currentConcurrent = 0;
+  let domainIndex = 0;
 
-  for (let i = 0; i < organizationDomains.length; i++) {
-    const domain = organizationDomains[i];
+  return new Promise<HighestRolePerson[]>((resolve, reject) => {
+    function startRequest() {
+      if (domainIndex >= organizationDomains.length) {
+        // No more domains to process
+        if (currentConcurrent === 0) {
+          // All requests have finished
+          resolve(highestRolePersons);
+        }
+        return;
+      }
 
-    // Calculate the delay for each request
-    const delayMs =
-      i === 0
-        ? 0
-        : i < 10
-        ? i * 5000 // First 10 requests: 5 seconds apart
-        : 45000 + (i - 9) * 1000; // Subsequent requests: 1 second apart starting after 45 seconds
+      if (currentConcurrent >= maxConcurrent) {
+        // Wait for a request to finish before starting a new one
+        return;
+      }
 
-    const task = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        limit(async () => {
-          try {
-            // Call the new API
-            const response = await axios.post(
-              newApiEndpoint,
-              { domain_name: domain },
-              { timeout: 300000 } // Set a timeout if necessary
-            );
+      const domain = organizationDomains[domainIndex];
+      domainIndex++;
 
-            const data = response.data;
-            const organization_id = data.organization_id;
-            const contacts: Contact[] = data.contacts;
+      currentConcurrent++;
 
-            if (!contacts || contacts.length === 0) {
-              console.log(`No contacts found for domain ${domain}`);
-              return;
-            }
+      (async () => {
+        try {
+          // Call the API
+          const response = await axios.post(
+            newApiEndpoint,
+            { domain_name: domain }
+          );
 
-            // Get the number_of_employees from the contacts
-            const numEmployeesStr = contacts[0].number_of_employees;
-            const numEmployees = parseInt(numEmployeesStr.replace(/[^\d]/g, ''), 10);
+          const data = response.data;
 
-            if (numEmployees > 100) {
-              console.log(
-                `Skipping domain ${domain} because it has ${numEmployees} employees`
-              );
-              return;
-            }
+          // Removed code that saves response data to JSON files
 
+          // Continue processing the data
+          const organization_id = data.organization_id;
+          const contacts: Contact[] = data.contacts;
+
+          if (!contacts || contacts.length === 0) {
+            console.log(`No contacts found for domain ${domain}`);
+          } else {
             // Prepare cleanedResults for GPT
             const cleanedResults = contacts.map((contact) => ({
               id: '', // You can generate an ID if necessary
@@ -172,7 +168,7 @@ async function getHighestRolePerson(
 
             // Use GPT to find the person with the highest role
             const completion = await openai.beta.chat.completions.parse({
-              model: 'gpt-4o-2024-08-06',
+              model: 'gpt-4',
               messages: [
                 {
                   role: 'system',
@@ -189,8 +185,7 @@ async function getHighestRolePerson(
               response_format: zodResponseFormat(PersonSchema, 'highest_role_person'),
             });
 
-            const highestRolePerson: { name: string; job_title: string } | null =
-              completion.choices[0].message.parsed;
+            const highestRolePerson = completion.choices[0].message.parsed;
 
             if (highestRolePerson) {
               // Find the full person details from contacts
@@ -205,52 +200,78 @@ async function getHighestRolePerson(
 
                 if (companyIndex === undefined) {
                   console.error(`Company index not found for domain ${domain}`);
-                  return;
+                } else {
+                  highestRolePersons.push({
+                    id: '', // Generate or assign an ID if necessary
+                    first_name: personDetails.name.split(' ')[0],
+                    last_name: personDetails.name.split(' ').slice(1).join(' '),
+                    organization_id: organization_id,
+                    title: personDetails.job_title,
+                    domain: domain,
+                    companyIndex: companyIndex,
+                  });
                 }
-
-                highestRolePersons.push({
-                  id: '', // Generate or assign an ID if necessary
-                  first_name: personDetails.name.split(' ')[0],
-                  last_name: personDetails.name.split(' ').slice(1).join(' '),
-                  organization_id: organization_id,
-                  title: personDetails.job_title,
-                  domain: domain,
-                  companyIndex: companyIndex,
-                });
               }
             } else {
               console.log(
                 `Highest role person could not be determined for domain ${domain}.`
               );
             }
-          } catch (error) {
-            console.error(`Error processing domain ${domain}:`, error);
           }
-        })
-          .then(resolve)
-          .catch(resolve);
+        } catch (error) {
+          console.error(`Error processing domain ${domain}:`, error);
+        } finally {
+          currentConcurrent--;
+
+          // Start a new request if possible
+          startRequest();
+
+          // If all requests have been processed and no concurrent requests remain, resolve the promise
+          if (domainIndex >= organizationDomains.length && currentConcurrent === 0) {
+            resolve(highestRolePersons);
+          }
+        }
+      })();
+    }
+
+    // Schedule initial requests with the required delays
+    let totalDelay = 0;
+
+    const scheduleNext = () => {
+      if (domainIndex >= organizationDomains.length) {
+        return;
+      }
+
+      if (currentConcurrent >= maxConcurrent) {
+        // Wait for slots to free up
+        return;
+      }
+
+      // Determine the delay
+      let delayMs = 0;
+      if (domainIndex < 10) {
+        delayMs = 5000; // 5 seconds between first 10 requests
+      } else {
+        delayMs = 1000; // 1 second between subsequent requests
+      }
+
+      totalDelay += delayMs;
+
+      setTimeout(() => {
+        startRequest();
+        scheduleNext();
       }, delayMs);
-    });
+    };
 
-    tasks.push(task);
-  }
-
-  // Wait for all tasks to complete
-  await Promise.all(tasks);
-
-  return highestRolePersons;
+    // Start scheduling requests
+    scheduleNext();
+  });
 }
 
+
+
 async function enrichHighestRolePersons(
-  highestRolePersons: {
-    id: string;
-    first_name: string;
-    last_name: string;
-    organization_id: string;
-    title: string;
-    domain: string;
-    companyIndex: number;
-  }[],
+  highestRolePersons: HighestRolePerson[],
   savedData: any[]
 ) {
   console.log(
@@ -263,45 +284,54 @@ async function enrichHighestRolePersons(
     return;
   }
 
-  const endpoint =
-    'https://apolloscraper-54137747006.us-central1.run.app/get_email';
+  const endpoint = 'https://apolloscraper-54137747006.us-central1.run.app/get_email';
 
-  const maxConcurrency = 50;
-  const delayBetweenFirst10 = 5000; // 5 seconds
-  const delayAfter10 = 1000; // 1 second
+  const maxConcurrent = 50;
+  let currentConcurrent = 0;
+  let personIndex = 0;
 
-  let runningTasks = 0;
-  const tasks: Promise<void>[] = [];
+  return new Promise<void>((resolve, reject) => {
+    function startRequest() {
+      if (personIndex >= highestRolePersons.length) {
+        // No more persons to process
+        if (currentConcurrent === 0) {
+          // All requests have finished
+          resolve();
+        }
+        return;
+      }
 
-  for (let i = 0; i < highestRolePersons.length; i++) {
-    const person = highestRolePersons[i];
+      if (currentConcurrent >= maxConcurrent) {
+        // Wait for a request to finish before starting a new one
+        return;
+      }
 
-    // Wait until runningTasks is less than maxConcurrency
-    while (runningTasks >= maxConcurrency) {
-      await delayPromise(1000); // Wait 1 second before checking again
-    }
+      const person = highestRolePersons[personIndex];
+      personIndex++;
 
-    // Start the task
-    const task = (async () => {
-      runningTasks++;
-      try {
-        // Construct the payload
-        const payload = {
-          first_name: person.first_name,
-          last_name: person.last_name,
-          organization_id: person.organization_id,
-        };
+      currentConcurrent++;
 
-        const headers = {
-          'Content-Type': 'application/json',
-        };
-
+      (async () => {
         try {
+          // Construct the payload
+          const payload = {
+            first_name: person.first_name,
+            last_name: person.last_name,
+            organization_id: person.organization_id,
+          };
+
+          const headers = {
+            'Content-Type': 'application/json',
+          };
+
           const response = await axios.post(endpoint, payload, {
             headers,
-            timeout: 300000,
+            timeout: 600000,
           });
 
+          // Removed code that saves response data to JSON files
+
+          // Continue processing the response
           if (response.status === 200 && response.data.email) {
             const email = response.data.email;
 
@@ -311,21 +341,21 @@ async function enrichHighestRolePersons(
               console.error(
                 `Company at index ${person.companyIndex} is undefined`
               );
-              return;
+            } else {
+              company.first_name = person.first_name || '';
+              company.last_name = person.last_name || '';
+              company.company_personal_email = email || '';
+              company.title = person.title || '';
+              console.log(
+                `Updated company at index ${person.companyIndex} with contact details:`,
+                {
+                  first_name: company.first_name,
+                  last_name: company.last_name,
+                  company_personal_email: company.company_personal_email,
+                  title: company.title,
+                }
+              );
             }
-            company.first_name = person.first_name || '';
-            company.last_name = person.last_name || '';
-            company.company_personal_email = email || '';
-            company.title = person.title || '';
-            console.log(
-              `Updated company at index ${person.companyIndex} with contact details:`,
-              {
-                first_name: company.first_name,
-                last_name: company.last_name,
-                company_personal_email: company.company_personal_email,
-                title: company.title,
-              }
-            );
           } else {
             console.log(`No email found for person ID ${person.id}`);
           }
@@ -334,27 +364,54 @@ async function enrichHighestRolePersons(
             `Error fetching email for person ID ${person.id}`,
             error
           );
+        } finally {
+          currentConcurrent--;
+
+          // Start a new request if possible
+          startRequest();
+
+          // If all requests have been processed and no concurrent requests remain, resolve the promise
+          if (personIndex >= highestRolePersons.length && currentConcurrent === 0) {
+            resolve();
+          }
         }
-      } finally {
-        runningTasks--;
-      }
-    })();
-
-    tasks.push(task);
-
-    // Implement the delays
-    if (i < 9) {
-      // For the first 10 requests, delay 5 seconds between starting each task
-      await delayPromise(delayBetweenFirst10);
-    } else {
-      // After the first 10 requests, delay 1 second between starting each task
-      await delayPromise(delayAfter10);
+      })();
     }
-  }
 
-  // Wait for all tasks to complete
-  await Promise.all(tasks);
+    // Schedule initial requests with the required delays
+    let totalDelay = 0;
+
+    const scheduleNext = () => {
+      if (personIndex >= highestRolePersons.length) {
+        return;
+      }
+
+      if (currentConcurrent >= maxConcurrent) {
+        // Wait for slots to free up
+        return;
+      }
+
+      // Determine the delay
+      let delayMs = 0;
+      if (personIndex < 10) {
+        delayMs = 5000; // 5 seconds between first 10 requests
+      } else {
+        delayMs = 1000; // 1 second between subsequent requests
+      }
+
+      totalDelay += delayMs;
+
+      setTimeout(() => {
+        startRequest();
+        scheduleNext();
+      }, delayMs);
+    };
+
+    // Start scheduling requests
+    scheduleNext();
+  });
 }
+
 
 function delayPromise(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -987,6 +1044,11 @@ interface CompanyData {
   [key: string]: any; // For additional properties
 }
 
+interface CompanyWithoutEmail {
+  index: number;
+  website: string;
+  domain: string;
+}
 
 
 // Corrected 'generateLeads' function
@@ -1066,7 +1128,6 @@ export async function generateLeads(
     // Read saved JSON file and assign IDs to each company
     let savedData: CompanyData[] = readJsonFromFile("finalResults.json");
 
-
     // Check if no leads were found after initial scraping
     if (savedData.length === 0) {
       console.log("No leads were found. Try changing locations or business type.");
@@ -1084,7 +1145,7 @@ export async function generateLeads(
     }
 
     // Assign an id to each company
-    for (let i = 0; i < savedData.length; i++) {0
+    for (let i = 0; i < savedData.length; i++) {
       // Generate an id (not too short)
       savedData[i].id = `company_${i}_${Date.now()}`;
     }
@@ -1096,69 +1157,40 @@ export async function generateLeads(
 
     // Proceed with the rest of the lead generation process using the filtered savedData
 
-
-    const highestRolePersons: {
-      id: string;
-      first_name: string;
-      last_name: string;
-      organization_id: string;
-      title: string;
-      domain: string;
-      companyIndex: number;
-    }[] = [];
-    
-    let domainsBatch: string[] = [];
+    const highestRolePersons: HighestRolePerson[] = [];
+    let organizationDomains: string[] = [];
     let domainToCompanyIndex: { [domain: string]: number } = {};
-    
+
     for (let index = 0; index < savedData.length; index++) {
       const company: CompanyData = savedData[index];
       console.log(`Processing company at index ${index}:`, company);
-    
+
       if (company.website) {
         const websiteDomain: string = getRootDomain(
           new URL(company.website).hostname.toLowerCase()
         );
-    
+
         if (isDomainExcluded(websiteDomain)) {
           console.log(`Excluded domain ${websiteDomain} from processing.`);
           continue; // Skip this company
         }
-    
-        domainsBatch.push(websiteDomain);
+
+        organizationDomains.push(websiteDomain);
         domainToCompanyIndex[websiteDomain] = index;
-    
-        // When we have collected enough domains, process them
-        if (domainsBatch.length === 10) {
-          console.log("Processing domains batch:", domainsBatch);
-          const highestRolePersonsBatch = await getHighestRolePerson(
-            domainsBatch,
-            domainToCompanyIndex
-          );
-    
-          console.log("Highest role persons found:", highestRolePersonsBatch);
-    
-          highestRolePersons.push(...highestRolePersonsBatch);
-    
-          // Clear the domainsBatch and domainToCompanyIndex
-          domainsBatch = [];
-          domainToCompanyIndex = {};
-        }
       }
     }
-    
-    // Process any remaining domains
-    if (domainsBatch.length > 0) {
-      console.log("Processing remaining domains batch:", domainsBatch);
-      const highestRolePersonsBatch = await getHighestRolePerson(
-        domainsBatch,
+
+    if (organizationDomains.length > 0) {
+      console.log("Processing domains:", organizationDomains);
+      const highestRolePersonsFound = await getHighestRolePerson(
+        organizationDomains,
         domainToCompanyIndex
       );
-    
-      console.log("Highest role persons found:", highestRolePersonsBatch);
-    
-      highestRolePersons.push(...highestRolePersonsBatch);
+
+      console.log("Highest role persons found:", highestRolePersonsFound);
+
+      highestRolePersons.push(...highestRolePersonsFound);
     }
-    
 
     // Now, we can proceed to enrich the highest role persons
     if (highestRolePersons.length > 0) {
@@ -1171,9 +1203,15 @@ export async function generateLeads(
 
     // --- New Step: Find company emails for companies without email ---
 
+    // Define the interface
+    interface CompanyWithoutEmail {
+      index: number;
+      website: string;
+      domain: string;
+    }
+
     // Identify companies without both personal and general emails and with website
-    // Identify companies without both personal and general emails and with website
-    const companiesWithoutEmail = [];
+    const companiesWithoutEmail: CompanyWithoutEmail[] = [];
 
     for (let index = 0; index < savedData.length; index++) {
       const company = savedData[index];
@@ -1199,62 +1237,111 @@ export async function generateLeads(
     if (companiesWithoutEmail.length > 0) {
       console.log('Running email scraper for companies without email...');
 
-      const maxConcurrency = 10;
+      const maxConcurrent = 50;
+      let currentConcurrent = 0;
+      let companyIdx = 0;
 
-      // Create a Bottleneck limiter
-      const limiter = new Bottleneck({
-        maxConcurrent: maxConcurrency,
-        minTime: 0, // We'll manage delays manually
-      });
-
-      // Function to process each company
-      const processCompany = async (company: any, index: number) => {
-        try {
-          // Implement delays
-          if (index < 10) {
-            // First 10 requests with 5 sec delay
-            await delay(5000);
-          } else {
-            // Subsequent requests with 1 sec delay
-            await delay(1000);
-          }
-
-          // Make API call to the email scraper service
-          const response = await axios.post('https://emailscraperservice-54137747006.us-central1.run.app', {
-            website: company.website,
-          });
-
-          const emails = response.data.emails;
-
-          if (emails && emails.length > 0) {
-            // Update the company in savedData
-            const companyIndex = company.index;
-            const companyInSavedData = savedData[companyIndex];
-            if (
-              !companyInSavedData.company_general_email ||
-              companyInSavedData.company_general_email.trim() === ''
-            ) {
-              companyInSavedData.company_general_email = emails[0]; // Take the first email
-              console.log(
-                `Added general email to company at index ${companyIndex}: ${companyInSavedData.company_general_email}`
-              );
+      await new Promise<void>((resolve, reject) => {
+        function startRequest() {
+          if (companyIdx >= companiesWithoutEmail.length) {
+            // No more companies to process
+            if (currentConcurrent === 0) {
+              // All requests have finished
+              resolve();
             }
-          } else {
-            console.log(`No emails found for website: ${company.website}`);
+            return;
           }
-        } catch (error) {
-          console.error(`Error scraping emails for website: ${company.website}`, error);
-        } finally {
-          console.log(`Processed company without email: ${company.website}`);
+
+          if (currentConcurrent >= maxConcurrent) {
+            // Wait for a request to finish before starting a new one
+            return;
+          }
+
+          const company = companiesWithoutEmail[companyIdx];
+          companyIdx++;
+
+          currentConcurrent++;
+
+          (async () => {
+            try {
+              // Make API call to the email scraper service
+              const response = await axios.post(
+                'https://emailscraperservice-54137747006.us-central1.run.app',
+                {
+                  website: company.website,
+                }
+              );
+
+              const emails = response.data.emails;
+
+              if (emails && emails.length > 0) {
+                // Update the company in savedData
+                const idx = company.index;
+                const companyInSavedData = savedData[idx];
+                if (
+                  !companyInSavedData.company_general_email ||
+                  companyInSavedData.company_general_email.trim() === ''
+                ) {
+                  companyInSavedData.company_general_email = emails[0]; // Take the first email
+                  console.log(
+                    `Added general email to company at index ${idx}: ${companyInSavedData.company_general_email}`
+                  );
+                }
+              } else {
+                console.log(`No emails found for website: ${company.website}`);
+              }
+            } catch (error) {
+              console.error(
+                `Error scraping emails for website: ${company.website}`,
+                error
+              );
+            } finally {
+              console.log(`Processed company without email: ${company.website}`);
+              currentConcurrent--;
+
+              // Start a new request if possible
+              startRequest();
+
+              // If all requests have been processed and no concurrent requests remain, resolve the promise
+              if (companyIdx >= companiesWithoutEmail.length && currentConcurrent === 0) {
+                resolve();
+              }
+            }
+          })();
         }
-      };
 
-      // Schedule all requests
-      const promises = companiesWithoutEmail.map((company, index) =>
-        limiter.schedule(() => processCompany(company, index))
-      );
+        // Schedule initial requests with the required delays
+        let totalDelay = 0;
 
-      await Promise.all(promises);
+        const scheduleNext = () => {
+          if (companyIdx >= companiesWithoutEmail.length) {
+            return;
+          }
+
+          if (currentConcurrent >= maxConcurrent) {
+            // Wait for slots to free up
+            return;
+          }
+
+          // Determine the delay
+          let delayMs = 0;
+          if (companyIdx <= 10) {
+            delayMs = 5000; // 5 seconds between first 10 requests
+          } else {
+            delayMs = 1000; // 1 second between subsequent requests
+          }
+
+          totalDelay += delayMs;
+
+          setTimeout(() => {
+            startRequest();
+            scheduleNext();
+          }, delayMs);
+        };
+
+        // Start scheduling requests
+        scheduleNext();
+      });
 
       // Save the updated savedData back to finalResults.json
       saveToFile('finalResults.json', savedData);
@@ -1271,8 +1358,6 @@ export async function generateLeads(
 
     // Return the filename and file size
     return { filename: csvResult.filename, fileSizeInBytes: csvResult.fileSizeInBytes };
-
-
 
   } catch (error) {
     console.error("Error in the lead generation process:", error);
