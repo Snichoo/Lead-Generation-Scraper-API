@@ -114,7 +114,7 @@ async function getContactsFromApify(domains: string[]): Promise<{ [domain: strin
 
   const actorId = 'jljBwyyQakqrL1wae';
 
-  const maxConcurrent = 5; // Adjust concurrency as appropriate
+  const maxConcurrent = 60; // Adjust concurrency as appropriate
   const limit = pLimit(maxConcurrent);
 
   const tasks = domains.map(domain => limit(async () => {
