@@ -1,3 +1,7 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
+
 import { OpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
@@ -113,7 +117,7 @@ async function getHighestRolePerson(
   console.log("getHighestRolePerson called with domains:", organizationDomains);
 
   const highestRolePersons: HighestRolePerson[] = [];
-  const newApiEndpoint = 'https://one-peoplescraper-54137747006.us-central1.run.app/scrape_contacts';
+  const newApiEndpoint = 'http://127.0.0.1:8080/scrape_contacts';
 
   const maxConcurrent = 50;
   let currentConcurrent = 0;
@@ -122,16 +126,13 @@ async function getHighestRolePerson(
   return new Promise<HighestRolePerson[]>((resolve, reject) => {
     function startRequest() {
       if (domainIndex >= organizationDomains.length) {
-        // No more domains to process
         if (currentConcurrent === 0) {
-          // All requests have finished
           resolve(highestRolePersons);
         }
         return;
       }
 
       if (currentConcurrent >= maxConcurrent) {
-        // Wait for a request to finish before starting a new one
         return;
       }
 
@@ -142,7 +143,6 @@ async function getHighestRolePerson(
 
       (async () => {
         try {
-          // Call the API
           const response = await axios.post(
             newApiEndpoint,
             { domain_name: domain }
@@ -150,7 +150,6 @@ async function getHighestRolePerson(
 
           const data = response.data;
 
-          // Removed code that saves response data to JSON files
 
           // Continue processing the data
           const organization_id = data.organization_id;
@@ -168,7 +167,7 @@ async function getHighestRolePerson(
 
             // Use GPT to find the person with the highest role
             const completion = await openai.beta.chat.completions.parse({
-              model: 'gpt-4',
+              model: 'gpt-4o-mini-2024-07-18',
               messages: [
                 {
                   role: 'system',
@@ -222,11 +221,7 @@ async function getHighestRolePerson(
           console.error(`Error processing domain ${domain}:`, error);
         } finally {
           currentConcurrent--;
-
-          // Start a new request if possible
           startRequest();
-
-          // If all requests have been processed and no concurrent requests remain, resolve the promise
           if (domainIndex >= organizationDomains.length && currentConcurrent === 0) {
             resolve(highestRolePersons);
           }
@@ -284,7 +279,7 @@ async function enrichHighestRolePersons(
     return;
   }
 
-  const endpoint = 'https://apolloscraper-54137747006.us-central1.run.app/get_email';
+  const endpoint = 'http://127.0.0.1:7070/get_email';
 
   const maxConcurrent = 50;
   let currentConcurrent = 0;
@@ -293,16 +288,13 @@ async function enrichHighestRolePersons(
   return new Promise<void>((resolve, reject) => {
     function startRequest() {
       if (personIdx >= highestRolePersons.length) {
-        // No more persons to process
         if (currentConcurrent === 0) {
-          // All requests have finished
           resolve();
         }
         return;
       }
 
       if (currentConcurrent >= maxConcurrent) {
-        // Wait for a request to finish before starting a new one
         return;
       }
 
@@ -313,7 +305,6 @@ async function enrichHighestRolePersons(
 
       (async () => {
         try {
-          // Construct the payload
           const payload = {
             first_name: person.first_name,
             last_name: person.last_name,
@@ -364,11 +355,7 @@ async function enrichHighestRolePersons(
           );
         } finally {
           currentConcurrent--;
-
-          // Start a new request if possible
           startRequest();
-
-          // If all requests have been processed and no concurrent requests remain, resolve the promise
           if (personIdx >= highestRolePersons.length && currentConcurrent === 0) {
             resolve();
           }
