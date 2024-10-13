@@ -384,7 +384,7 @@ function parseAddress(address: string) {
   };
 }
 
-// Replace your existing generateCSVFile function with this
+// Replace your existing generateCSVFile function with this.
 async function generateCSVFile(
   businessType: string,
   location: string,
