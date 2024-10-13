@@ -288,11 +288,11 @@ async function enrichHighestRolePersons(
 
   const maxConcurrent = 50;
   let currentConcurrent = 0;
-  let personIndex = 0;
+  let personIdx = 0;
 
   return new Promise<void>((resolve, reject) => {
     function startRequest() {
-      if (personIndex >= highestRolePersons.length) {
+      if (personIdx >= highestRolePersons.length) {
         // No more persons to process
         if (currentConcurrent === 0) {
           // All requests have finished
@@ -306,8 +306,8 @@ async function enrichHighestRolePersons(
         return;
       }
 
-      const person = highestRolePersons[personIndex];
-      personIndex++;
+      const person = highestRolePersons[personIdx];
+      personIdx++;
 
       currentConcurrent++;
 
@@ -328,8 +328,6 @@ async function enrichHighestRolePersons(
             headers,
             timeout: 600000,
           });
-
-          // Removed code that saves response data to JSON files
 
           // Continue processing the response
           if (response.status === 200 && response.data.email) {
@@ -371,7 +369,7 @@ async function enrichHighestRolePersons(
           startRequest();
 
           // If all requests have been processed and no concurrent requests remain, resolve the promise
-          if (personIndex >= highestRolePersons.length && currentConcurrent === 0) {
+          if (personIdx >= highestRolePersons.length && currentConcurrent === 0) {
             resolve();
           }
         }
@@ -382,7 +380,7 @@ async function enrichHighestRolePersons(
     let totalDelay = 0;
 
     const scheduleNext = () => {
-      if (personIndex >= highestRolePersons.length) {
+      if (personIdx >= highestRolePersons.length) {
         return;
       }
 
@@ -393,7 +391,7 @@ async function enrichHighestRolePersons(
 
       // Determine the delay
       let delayMs = 0;
-      if (personIndex < 10) {
+      if (personIdx < 10) {
         delayMs = 5000; // 5 seconds between first 10 requests
       } else {
         delayMs = 1000; // 1 second between subsequent requests
