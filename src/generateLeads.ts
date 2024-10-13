@@ -856,6 +856,11 @@ export async function generateLeads(
                 'https://emailscraperservice-54137747006.us-central1.run.app/scrape-emails',
                 {
                   website: company.website,
+                },
+                {
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
                 }
               );
 
